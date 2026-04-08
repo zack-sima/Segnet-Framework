@@ -1,6 +1,6 @@
 using System;
 
-namespace NetCore {
+namespace SegNet {
     public enum NetRole {
         None = 0,
         Server = 1,

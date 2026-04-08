@@ -1,5 +1,8 @@
 using UnityEngine;
 
-public class NetworkBehaviour {
+namespace SegNet {
 
+    public class NetworkBehaviour : MonoBehaviour {
+
+    }
 }

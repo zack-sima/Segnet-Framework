@@ -1,80 +1,67 @@
 using UnityEngine;
-using static NetworkStreamManager;
 
-public class NetworkManager : MonoBehaviour {
-    public static NetworkManager instance;
+namespace SegNet {
 
-    //for joining/hosting game, etc
-    [SerializeField] private NetworkConnectionManager connectionManager;
+    /// <summary>
+    /// Temporary test controller that exercises the ServerManager / MessageDispatcher pipeline.
+    /// Replace with your actual game networking logic once the framework is wired up.
+    ///
+    /// Keys:
+    ///   H = Start Host
+    ///   C = Start Client
+    ///   S = Server broadcasts a test message to all clients
+    ///   Q = Send a test user-message to all connections
+    ///   X = Stop
+    /// </summary>
+    public class NetworkManager : MonoBehaviour {
 
-    //for sending data
-    [SerializeField] private NetworkStreamManager streamManager;
+        [SerializeField] private string testMessage = "hello, network";
 
-    // Test payload string (server sends this when you press 'S')
-    [SerializeField] private string testMessage = "hello, client";
+        // Use a user-range message type for the test payload
+        private const ushort TestMessageType = (ushort)NetworkMessageType.UserStart;
 
-    // Test RPC message (sent when you press 'Q')
-    [SerializeField] private string testRpcMessage = "hello, rpc";
-
-    private void Awake() {
-        if (instance != null && instance != this) {
-            Destroy(gameObject);
-            return;
-        }
-        instance = this;
-    }
-
-    private void Update() {
-        if (connectionManager == null || streamManager == null)
-            return;
-
-        if (!connectionManager.IsConnected()) {
-            if (Input.GetKeyDown(KeyCode.H)) {
-                connectionManager.Host();
+        private void Start() {
+            if (ServerManager.Instance == null) {
+                Debug.LogError("[NetworkManager] ServerManager not found in scene.");
+                return;
             }
 
-            if (Input.GetKeyDown(KeyCode.C)) {
-                connectionManager.Join();
+            // Register a handler for our test message type
+            ServerManager.Instance.Messages.RegisterHandler(TestMessageType, OnTestMessageReceived);
+        }
+
+        private void OnDestroy() {
+            if (ServerManager.Instance != null && ServerManager.Instance.Messages != null)
+                ServerManager.Instance.Messages.UnregisterHandler(TestMessageType);
+        }
+
+        private void Update() {
+            var sm = ServerManager.Instance;
+            if (sm == null) return;
+
+            if (!sm.IsOnline) {
+                if (Input.GetKeyDown(KeyCode.H)) sm.StartHost();
+                if (Input.GetKeyDown(KeyCode.C)) sm.StartClient();
+                return;
             }
-            return;
-        }
 
-        // is in an active game
-        if (Input.GetKeyDown(KeyCode.S) && connectionManager.IsServer) {
-            var payload = new NetStreamPayload { data = testMessage, diffs = new NetStreamPayload.BuildingDiff[10] };
-            foreach (var conn in connectionManager.Connections) {
-                streamManager.ServerSendStreamObject(conn, payload);
+            if (Input.GetKeyDown(KeyCode.X)) {
+                sm.Stop();
+                return;
+            }
+
+            // Broadcast a test message (works from server/host or client)
+            if (Input.GetKeyDown(KeyCode.S) || Input.GetKeyDown(KeyCode.Q)) {
+                var writer = new NetworkWriter();
+                writer.WriteString(testMessage);
+                sm.Messages.Broadcast(TestMessageType, writer);
+                Debug.Log($"[NetworkManager] Sent test message: \"{testMessage}\"");
             }
         }
 
-        // Send RPC to all other connections (server -> clients, or client -> server)
-        if (Input.GetKeyDown(KeyCode.Q)) {
-            var rpc = new RPCPayload { message = testRpcMessage };
-            foreach (var conn in connectionManager.Connections) {
-                streamManager.SendRpcTo(conn, rpc);
-            }
+        private void OnTestMessageReceived(ConnectionId from, NetworkReader reader) {
+            string msg = reader.ReadString();
+            Debug.Log($"[NetworkManager] Test message from {from}: \"{msg}\"");
         }
-    }
-
-    // ---------- Callbacks wired from NetworkStreamManager's UnityEvents ----------
-
-    // Hook this to NetworkStreamManager.onStreamReceivedObject in the inspector
-    public void OnStreamObjectReceived(NetStreamPayload payload) {
-        if (payload == null) {
-            Debug.Log("[NetworkManager] Stream object received: <null>");
-            return;
-        }
-
-        Debug.Log($"[NetworkManager] Stream object received: \"{payload.data}\"");
-    }
-
-    // Hook this to NetworkStreamManager.onRpcReceivedObject in the inspector
-    public void OnRpcObjectReceived(RPCPayload payload) {
-        if (payload == null) {
-            Debug.Log("[NetworkManager] RPC object received: <null>");
-            return;
-        }
-
-        Debug.Log($"[NetworkManager] RPC object received: \"{payload.message}\"");
     }
 }

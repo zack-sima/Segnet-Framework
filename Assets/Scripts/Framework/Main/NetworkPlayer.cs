@@ -1,5 +1,8 @@
 using UnityEngine;
 
-public class NetworkPlayer {
+namespace SegNet {
 
+    public class NetworkPlayer : MonoBehaviour {
+
+    }
 }
