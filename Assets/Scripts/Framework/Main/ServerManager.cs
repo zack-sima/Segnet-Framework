@@ -70,7 +70,6 @@ namespace SegNet {
                 return;
             }
             Instance = this;
-            DontDestroyOnLoad(gameObject);
 
             ValidateReferences();
 
