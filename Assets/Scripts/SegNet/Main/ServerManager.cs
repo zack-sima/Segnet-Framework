@@ -82,9 +82,14 @@ namespace SegNet {
 
         private void Awake() {
             if (Instance != null && Instance != this) {
-                Debug.LogWarning("[ServerManager] Duplicate instance destroyed.");
-                Destroy(transform.root.gameObject);
-                return;
+                if (NetworkManager.IsReplacingPersistentRoot) {
+                    Debug.Log("[ServerManager] Replacing previous persistent instance.");
+                    Destroy(Instance.transform.root.gameObject);
+                } else {
+                    Debug.LogWarning("[ServerManager] Duplicate instance destroyed.");
+                    Destroy(transform.root.gameObject);
+                    return;
+                }
             }
             Instance = this;
 

@@ -24,9 +24,14 @@ namespace SegNet {
 
         private void Awake() {
             if (Instance != null && Instance != this) {
-                Debug.LogWarning("[NetworkSceneManager] Duplicate instance in scene — destroying.");
-                Destroy(this);
-                return;
+                if (NetworkManager.IsReplacingPersistentRoot) {
+                    Debug.Log("[NetworkSceneManager] Replacing previous persistent instance.");
+                    Destroy(Instance.transform.root.gameObject);
+                } else {
+                    Debug.LogWarning("[NetworkSceneManager] Duplicate instance in scene — destroying.");
+                    Destroy(this);
+                    return;
+                }
             }
             Instance = this;
 
@@ -61,6 +66,18 @@ namespace SegNet {
         public NetworkBehaviour GetBySceneId(uint sceneObjectId) {
             _sceneObjects.TryGetValue(sceneObjectId, out var obj);
             return obj;
+        }
+
+        /// <summary>
+        /// Clears the currently tracked scene-object roster so a new scene can register cleanly.
+        /// </summary>
+        public void ClearSceneObjects() {
+            foreach (var kvp in _sceneObjects) {
+                if (kvp.Value != null)
+                    kvp.Value.SceneObjectId = 0;
+            }
+
+            _sceneObjects.Clear();
         }
 
         // ---- Deterministic scene-object ID ----

@@ -12,7 +12,7 @@ namespace SegNet {
     ///
     /// GameObject lives under ServerManager in the hierarchy and contains only this component.
     /// </summary>
-    public sealed class NetworkPlayer : MonoBehaviour {
+    public class NetworkPlayer : MonoBehaviour {
 
         /// <summary>Unique player/session ID assigned by the server. Stable for the session lifetime.</summary>
         public int PlayerId { get; internal set; }
