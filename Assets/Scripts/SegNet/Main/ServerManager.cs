@@ -61,6 +61,8 @@ namespace SegNet {
         private readonly Dictionary<uint, NetworkBehaviour> _networkedObjects =
             new Dictionary<uint, NetworkBehaviour>();
         private uint _nextNetworkId = 1;
+        private float _nextHeartbeatAt;
+        private readonly HashSet<ConnectionId> _lateJoinTargets = new HashSet<ConnectionId>();
 
         /// <summary>All networked objects (runtime + scene) keyed by NetworkId.</summary>
         public IReadOnlyDictionary<uint, NetworkBehaviour> NetworkedObjects => _networkedObjects;
@@ -114,8 +116,10 @@ namespace SegNet {
         }
 
         private void LateUpdate() {
-            if (IsServer)
+            if (IsServer) {
                 ProcessDirtyObjects();
+                SendHeartbeatIfDue();
+            }
         }
 
         // ==================================================================
@@ -193,6 +197,7 @@ namespace SegNet {
             LocalPlayer = null;
             _nextNetworkId = 1;
             _nextPlayerId = 1;
+            _nextHeartbeatAt = 0f;
 
             Debug.Log($"[ServerManager] Stopped (was {previousState}).");
             OnStopped?.Invoke();
@@ -280,18 +285,23 @@ namespace SegNet {
 
             if (!IsServer) return;
 
-            // 1. Send existing players
-            foreach (var kvp in _players)
-                SendPlayerJoined(connId, kvp.Value, isYou: false);
+            _lateJoinTargets.Add(connId);
+            try {
+                // 1. Send existing players
+                foreach (var kvp in _players)
+                    SendPlayerJoined(connId, kvp.Value, isYou: false);
 
-            // 2. Create new player
-            var newPlayer = CreatePlayer(connId, isLocal: false, isHost: false);
-            SendPlayerJoined(connId, newPlayer, isYou: true);
-            BroadcastPlayerJoinedExcept(connId, newPlayer);
+                // 2. Create new player
+                var newPlayer = CreatePlayer(connId, isLocal: false, isHost: false);
+                SendPlayerJoined(connId, newPlayer, isYou: true);
+                BroadcastPlayerJoinedExcept(connId, newPlayer);
 
-            // 3. Send all existing network objects (scene + runtime)
-            foreach (var kvp in _networkedObjects)
-                SendSpawnTo(connId, kvp.Value);
+                // 3. Send all existing network objects (scene + runtime)
+                foreach (var kvp in _networkedObjects)
+                    SendSpawnTo(connId, kvp.Value);
+            } finally {
+                _lateJoinTargets.Remove(connId);
+            }
         }
 
         private void HandleClientDisconnected(ConnectionId connId, DisconnectReason reason) {
@@ -403,8 +413,12 @@ namespace SegNet {
             OnObjectSpawned?.Invoke(root);
 
             // Send to all remote clients
-            foreach (var conn in connectionManager.Connections)
+            foreach (var conn in connectionManager.Connections) {
+                if (_lateJoinTargets.Contains(conn))
+                    continue;
+
                 SendSpawnTo(conn, root);
+            }
 
             return root;
         }
@@ -539,6 +553,7 @@ namespace SegNet {
             Messages.RegisterHandler(NetworkMessageType.Spawn, OnMsg_Spawn);
             Messages.RegisterHandler(NetworkMessageType.Despawn, OnMsg_Despawn);
             Messages.RegisterHandler(NetworkMessageType.StateUpdate, OnMsg_StateUpdate);
+            Messages.RegisterHandler(NetworkMessageType.Heartbeat, OnMsg_Heartbeat);
         }
 
         private void UnregisterClientMessageHandlers() {
@@ -547,6 +562,7 @@ namespace SegNet {
             Messages.UnregisterHandler(NetworkMessageType.Spawn);
             Messages.UnregisterHandler(NetworkMessageType.Despawn);
             Messages.UnregisterHandler(NetworkMessageType.StateUpdate);
+            Messages.UnregisterHandler(NetworkMessageType.Heartbeat);
         }
 
         // ---- Player messages (unchanged) ----
@@ -716,6 +732,8 @@ namespace SegNet {
             behaviours[componentIndex].OnDeserialize(reader, false);
         }
 
+        private void OnMsg_Heartbeat(ConnectionId from, NetworkReader reader) { }
+
         // ==================================================================
         //  Player creation / destruction
         // ==================================================================
@@ -775,6 +793,21 @@ namespace SegNet {
                 Debug.LogError("[ServerManager] NetworkStreamManager reference is missing.");
             if (prefabRegistry == null)
                 Debug.LogWarning("[ServerManager] PrefabRegistry not assigned. Runtime spawning will fail.");
+        }
+
+        private void SendHeartbeatIfDue() {
+            const float heartbeatIntervalSeconds = 1f;
+
+            if (Time.unscaledTime < _nextHeartbeatAt)
+                return;
+
+            _nextHeartbeatAt = Time.unscaledTime + heartbeatIntervalSeconds;
+
+            if (connectionManager == null || connectionManager.Connections.Count == 0)
+                return;
+
+            var writer = new NetworkWriter();
+            Messages.Broadcast(NetworkMessageType.Heartbeat, writer);
         }
     }
 }

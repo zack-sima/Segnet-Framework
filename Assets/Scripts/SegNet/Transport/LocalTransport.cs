@@ -39,6 +39,9 @@ namespace SegNet {
             new Dictionary<TcpClient, ReceiveBuffer>();
         private int _nextId = 1;
         private readonly byte[] _readScratch = new byte[8192];
+        private bool _clientConnectCompleted;
+        private bool _clientConnectSucceeded;
+        private string _clientConnectError;
 
         // ---- ITransport ----
 
@@ -104,6 +107,9 @@ namespace SegNet {
             _clientConnected = false;
 
             _receiveBuffers.Clear();
+            _clientConnectCompleted = false;
+            _clientConnectSucceeded = false;
+            _clientConnectError = null;
 
             Role = NetRole.None;
             IsRunning = false;
@@ -182,6 +188,8 @@ namespace SegNet {
         // ---- Client polling ----
 
         private void PollClient() {
+            ProcessPendingClientConnect();
+
             if (_clientSocket == null || !_clientConnected) return;
 
             if (!ReadFromSocket(_clientSocket, _serverConnId))
@@ -191,17 +199,13 @@ namespace SegNet {
         private void OnClientConnectComplete(IAsyncResult ar) {
             try {
                 _clientSocket.EndConnect(ar);
-
-                _serverConnId = new ConnectionId(_nextId++);
-                _receiveBuffers[_clientSocket] = new ReceiveBuffer();
-                _clientConnected = true;
-
-                Debug.Log($"[LocalTransport] Client connected to server as {_serverConnId}");
-                OnConnected?.Invoke(_serverConnId);
+                _clientConnectSucceeded = true;
+                _clientConnectError = null;
             } catch (Exception ex) {
-                Debug.LogError($"[LocalTransport] Client connection failed: {ex.Message}");
-                IsRunning = false;
-                Role = NetRole.None;
+                _clientConnectSucceeded = false;
+                _clientConnectError = ex.Message;
+            } finally {
+                _clientConnectCompleted = true;
             }
         }
 
@@ -280,6 +284,35 @@ namespace SegNet {
 
         private static void CloseSocket(TcpClient client) {
             try { client?.Close(); } catch { }
+        }
+
+        private void ProcessPendingClientConnect() {
+            if (!_clientConnectCompleted)
+                return;
+
+            _clientConnectCompleted = false;
+
+            if (_clientConnectSucceeded) {
+                if (_clientSocket == null || !_clientSocket.Connected) {
+                    _clientConnectSucceeded = false;
+                    _clientConnectError = "Socket was not connected when processed on main thread.";
+                } else {
+                    _serverConnId = new ConnectionId(_nextId++);
+                    _receiveBuffers[_clientSocket] = new ReceiveBuffer();
+                    _clientConnected = true;
+
+                    Debug.Log($"[LocalTransport] Client connected to server as {_serverConnId}");
+                    OnConnected?.Invoke(_serverConnId);
+                    return;
+                }
+            }
+
+            Debug.LogError($"[LocalTransport] Client connection failed: {_clientConnectError}");
+            CloseSocket(_clientSocket);
+            _clientSocket = null;
+            _clientConnected = false;
+            IsRunning = false;
+            Role = NetRole.None;
         }
 
         // ---- Unity lifecycle ----

@@ -3,6 +3,9 @@ using UnityEngine;
 
 public class SampleNetPlayer : NetworkBehaviour {
     void Update() {
+        //only local player can do controls! TODO: add sync direction local -> server for client to take effect
+        if (OwnerPlayer == null || !OwnerPlayer.IsLocal) return;
+
         if (Input.GetKey(KeyCode.UpArrow)) {
             transform.position += Vector3.forward * Time.deltaTime;
         }

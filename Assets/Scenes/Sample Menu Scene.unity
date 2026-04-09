@@ -1699,13 +1699,16 @@ MonoBehaviour:
   m_GameObject: {fileID: 1557631540}
   m_Enabled: 1
   m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: 1e5ecdc8bc4684817adde34499892004, type: 3}
+  m_Script: {fileID: 11500000, guid: b11b777abaa3f4dc086b092e11ee678f, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
   gameScene: Sample Game Scene
   menuScene: Sample Menu Scene
   testMessage: hello, client
   testSpawnPrefab: {fileID: 2238453962375176072, guid: b9255958220c8423ab0ce6673f07a721, type: 3}
+  samplePlayerPrefab: {fileID: 7370686485846436604, guid: fd3898e4245404ec4a4016a6748d1064, type: 3}
+  spawnOrigin: {x: 0, y: 0, z: 0}
+  spawnSpacing: 2
 --- !u!4 &1557631542
 Transform:
   m_ObjectHideFlags: 0
@@ -1841,6 +1844,7 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: 
   transportBehaviour: {fileID: 872395269}
+  clientTimeoutMs: 10000
 --- !u!1 &1771060104
 GameObject:
   m_ObjectHideFlags: 0

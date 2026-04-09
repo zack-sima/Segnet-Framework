@@ -74,6 +74,7 @@ namespace SegNet {
                 Debug.Log($"[NetworkManager] === SPAWNED: {o} ===");
             sm.OnObjectDespawned += o =>
                 Debug.Log($"[NetworkManager] === DESPAWNED: {o} ===");
+            sm.OnClientDisconnected += HandleClientDisconnected;
             sm.OnStarted += () =>
                 Debug.Log($"[NetworkManager] === NETWORK STARTED ({sm.State}) ===");
             sm.OnStopped += () =>
@@ -84,8 +85,12 @@ namespace SegNet {
             if (Instance == this)
                 Instance = null;
 
-            if (ServerManager.Instance != null && ServerManager.Instance.Messages != null)
-                ServerManager.Instance.Messages.UnregisterHandler(TestMessageType);
+            if (ServerManager.Instance != null) {
+                if (ServerManager.Instance.Messages != null)
+                    ServerManager.Instance.Messages.UnregisterHandler(TestMessageType);
+
+                ServerManager.Instance.OnClientDisconnected -= HandleClientDisconnected;
+            }
         }
 
         private void Update() {
@@ -150,6 +155,15 @@ namespace SegNet {
         private void OnTestMessageReceived(ConnectionId from, NetworkReader reader) {
             string msg = reader.ReadString();
             Debug.Log($"[NetworkManager] Test message from {from}: \"{msg}\"");
+        }
+
+        private void HandleClientDisconnected(ConnectionId connectionId, DisconnectReason reason) {
+            var sm = ServerManager.Instance;
+            if (sm == null || sm.State != NetworkState.Client)
+                return;
+
+            Debug.LogWarning($"[NetworkManager] Lost host connection ({reason}). Returning to menu.");
+            StopGame();
         }
 
         private IEnumerator BeginSession(NetworkState targetState) {
