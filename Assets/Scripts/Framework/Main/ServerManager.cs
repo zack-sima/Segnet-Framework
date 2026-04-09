@@ -19,7 +19,6 @@ namespace SegNet {
     /// <summary>
     /// Singleton entry point for the SegNet framework.
     /// Manages network lifecycle, player records, object spawning, and state replication.
-    /// Persists across scene loads via DontDestroyOnLoad.
     /// </summary>
     public class ServerManager : MonoBehaviour {
         public static ServerManager Instance { get; private set; }
@@ -84,11 +83,10 @@ namespace SegNet {
         private void Awake() {
             if (Instance != null && Instance != this) {
                 Debug.LogWarning("[ServerManager] Duplicate instance destroyed.");
-                Destroy(gameObject);
+                Destroy(transform.root.gameObject);
                 return;
             }
             Instance = this;
-            DontDestroyOnLoad(transform.root.gameObject);
 
             ValidateReferences();
 

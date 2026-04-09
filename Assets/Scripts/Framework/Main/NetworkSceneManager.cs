@@ -5,7 +5,7 @@ namespace SegNet {
 
     /// <summary>
     /// Per-scene singleton that collects scene-placed NetworkBehaviours.
-    /// NOT persistent — each scene has its own instance. Destroyed on scene reload.
+    /// Destroyed on scene reload.
     ///
     /// Scene objects self-register via NetworkBehaviour.Awake(). If this manager
     /// awakens after some behaviours, it drains their pending registrations.
