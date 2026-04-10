@@ -135,6 +135,38 @@ namespace SegNet {
 
         public Vector3Int ReadVector3Int() => new Vector3Int(ReadInt(), ReadInt(), ReadInt());
 
+        // ---- NetworkBehaviour / NetworkPlayer references ----
+        //
+        // Reads a stable ID off the wire and resolves it to a live instance via
+        // ServerManager. Returns null if the id is the sentinel (0 / -1) or if
+        // the target object isn't currently known on this peer (e.g. RPC arrived
+        // before the spawn message). Callers may need to handle null.
+
+        /// <summary>
+        /// Reads a NetworkBehaviour reference (uint NetworkId).
+        /// Returns null for id 0 or if the object isn't currently spawned on this peer.
+        /// To get a typed reference, the IL weaver emits a castclass after this call.
+        /// </summary>
+        public NetworkBehaviour ReadNetworkBehaviour() {
+            uint nid = ReadUInt();
+            if (nid == 0u) return null;
+            var sm = ServerManager.Instance;
+            if (sm == null) return null;
+            return sm.GetNetworkObject(nid);
+        }
+
+        /// <summary>
+        /// Reads a NetworkPlayer reference (int PlayerId).
+        /// Returns null for id -1 or if the player isn't currently known on this peer.
+        /// </summary>
+        public NetworkPlayer ReadNetworkPlayer() {
+            int pid = ReadInt();
+            if (pid < 0) return null;
+            var sm = ServerManager.Instance;
+            if (sm == null) return null;
+            return sm.GetPlayer(pid);
+        }
+
         // ---- Raw bytes ----
 
         /// <summary>Reads a length-prefixed byte array. -1 length = null.</summary>

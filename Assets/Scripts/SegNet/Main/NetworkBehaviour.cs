@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using UnityEngine;
 
@@ -67,6 +68,10 @@ namespace SegNet {
         public bool IsClient =>
             ServerManager.Instance != null && ServerManager.Instance.IsClient;
 
+        /// <summary>True when this peer is running as both server and client (host mode).</summary>
+        public bool IsHost =>
+            ServerManager.Instance != null && ServerManager.Instance.IsHost;
+
         /// <summary>True if the local player owns this object.</summary>
         public bool IsOwner =>
             OwnerPlayer != null && OwnerPlayer.IsLocal;
@@ -85,6 +90,169 @@ namespace SegNet {
             bool d = _dirty;
             _dirty = false;
             return d;
+        }
+
+        // ---- SyncVar dirty mask ----
+        //
+        // The IL weaver assigns each [SyncVar] field a sequential bit index within its
+        // declaring type (max 64 SyncVars per behaviour). Generated setter wrappers call
+        // SetSyncVarDirty(bit) on assignment, which both flips the bit and marks the whole
+        // behaviour dirty so the existing LateUpdate flush in ServerManager picks it up.
+        //
+        // Generated OnSerialize writes the mask + only the dirty fields for delta updates
+        // and clears it when done. Generated OnDeserialize reads the mask back.
+
+        internal ulong _syncVarDirtyMask;
+
+        /// <summary>Called by weaver-generated SyncVar setters. Marks the bit and the behaviour dirty.</summary>
+        protected void SetSyncVarDirty(int bitIndex) {
+            _syncVarDirtyMask |= 1UL << bitIndex;
+            SetDirty();
+        }
+
+        /// <summary>Called by weaver-generated OnSerialize after writing dirty deltas.</summary>
+        internal void ClearSyncVarDirtyMask() {
+            _syncVarDirtyMask = 0;
+        }
+
+        // ---- RPC send entry point ----
+        //
+        // Single funnel called by woven [Rpc] method bodies. The original method body is
+        // moved to __SegNetRpcImpl_<Name> and replaced with code that:
+        //   1. Builds a NetworkWriter containing the serialized arguments
+        //   2. Calls SendRpcInternal with the stable rpcId, direction, and channel
+        //   3. (Host shortcut) calls the impl method directly so the host's local side
+        //      sees ServerToClients RPCs and ClientToServer RPCs without round-trip
+        //
+        // Wire format of the payload built here (the NetworkMessageType.RPC header is
+        // prepended by MessageDispatcher.Send/Broadcast):
+        //   [uint networkId][ushort componentIndex][ushort rpcId][ushort argLen][argBytes...]
+
+        protected void SendRpcInternal(ushort rpcId, RpcDirection direction,
+            ChannelType channel, NetworkWriter args) {
+
+            var sm = ServerManager.Instance;
+            if (!CanSendRpc(sm, rpcId)) return;
+
+            var payload = BuildRpcPayload(rpcId, args);
+            if (payload == null) return;
+
+            switch (direction) {
+                case RpcDirection.ClientToServer:
+                case RpcDirection.LocalClientToServer: {
+                    if (!sm.IsClient) {
+                        Debug.LogWarning(
+                            $"[NetworkBehaviour] ClientToServer RPC 0x{rpcId:X4} called " +
+                            "but not running as client.");
+                        return;
+                    }
+                    var serverConn = sm.ServerConnection;
+                    if (serverConn == ConnectionId.Invalid) {
+                        Debug.LogWarning(
+                            $"[NetworkBehaviour] ClientToServer RPC 0x{rpcId:X4}: " +
+                            "no server connection.");
+                        return;
+                    }
+                    sm.Messages.Send(serverConn, NetworkMessageType.RPC, payload, channel);
+                    break;
+                }
+
+                case RpcDirection.ServerToClients: {
+                    if (!sm.IsServer) {
+                        Debug.LogWarning(
+                            $"[NetworkBehaviour] ServerToClients RPC 0x{rpcId:X4} called " +
+                            "but not running as server.");
+                        return;
+                    }
+                    sm.Messages.Broadcast(NetworkMessageType.RPC, payload, channel);
+                    break;
+                }
+
+                case RpcDirection.ServerToClient:
+                    Debug.LogError(
+                        $"[NetworkBehaviour] ServerToClient RPC 0x{rpcId:X4}: " +
+                        "weaver should have routed this through SendRpcInternalTo.");
+                    break;
+            }
+        }
+
+        /// <summary>
+        /// Single-target server send. Used by woven [Rpc(ServerToClient)] wrappers after
+        /// resolving the target NetworkPlayer (typically the object's OwnerPlayer).
+        ///
+        /// The host shortcut (target == local host player) is handled in the wrapper, so
+        /// by the time we get here we expect a remote target with a valid ConnectionId.
+        /// </summary>
+        protected void SendRpcInternalTo(ushort rpcId, ChannelType channel,
+            NetworkWriter args, NetworkPlayer target) {
+
+            var sm = ServerManager.Instance;
+            if (!CanSendRpc(sm, rpcId)) return;
+
+            if (!sm.IsServer) {
+                Debug.LogWarning(
+                    $"[NetworkBehaviour] ServerToClient RPC 0x{rpcId:X4} called " +
+                    "but not running as server.");
+                return;
+            }
+            if (target == null) {
+                Debug.LogWarning(
+                    $"[NetworkBehaviour] ServerToClient RPC 0x{rpcId:X4}: target is null.");
+                return;
+            }
+            if (target.ConnectionId == ConnectionId.Invalid) {
+                Debug.LogWarning(
+                    $"[NetworkBehaviour] ServerToClient RPC 0x{rpcId:X4}: target player " +
+                    $"P{target.PlayerId} has no connection (host self-target should have been " +
+                    "handled by the wrapper).");
+                return;
+            }
+
+            var payload = BuildRpcPayload(rpcId, args);
+            if (payload == null) return;
+            sm.Messages.Send(target.ConnectionId, NetworkMessageType.RPC, payload, channel);
+        }
+
+        /// <summary>Common preconditions for any RPC send. Logs and returns false on failure.</summary>
+        private bool CanSendRpc(ServerManager sm, ushort rpcId) {
+            if (sm == null || !sm.IsOnline) {
+                Debug.LogWarning(
+                    $"[NetworkBehaviour] Cannot send RPC 0x{rpcId:X4}: ServerManager offline.");
+                return false;
+            }
+            if (!IsSpawned) {
+                Debug.LogWarning(
+                    $"[NetworkBehaviour] Cannot send RPC 0x{rpcId:X4} on '{name}': not spawned.");
+                return false;
+            }
+            return true;
+        }
+
+        /// <summary>
+        /// Build the framed RPC payload (the NetworkMessageType.RPC header is added later
+        /// by MessageDispatcher). Returns null on overflow.
+        /// </summary>
+        private NetworkWriter BuildRpcPayload(ushort rpcId, NetworkWriter args) {
+            var payload = new NetworkWriter(64);
+            payload.WriteUInt(NetworkId);
+            payload.WriteUShort((ushort)ComponentIndex);
+            payload.WriteUShort(rpcId);
+
+            ArraySegment<byte> argSeg = args != null
+                ? args.ToArraySegment()
+                : new ArraySegment<byte>(Array.Empty<byte>());
+
+            if (argSeg.Count > ushort.MaxValue) {
+                Debug.LogError(
+                    $"[NetworkBehaviour] RPC 0x{rpcId:X4} arg payload {argSeg.Count} bytes " +
+                    $"exceeds ushort max ({ushort.MaxValue}).");
+                return null;
+            }
+
+            payload.WriteUShort((ushort)argSeg.Count);
+            if (argSeg.Count > 0)
+                payload.WriteRawBytes(argSeg);
+            return payload;
         }
 
         // ---- Virtual lifecycle callbacks ----

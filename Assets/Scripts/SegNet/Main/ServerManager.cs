@@ -46,6 +46,20 @@ namespace SegNet {
 
         public IReadOnlyCollection<ConnectionId> Connections => connectionManager.Connections;
 
+        /// <summary>
+        /// On a pure client this is the single connection to the server. Used by the
+        /// RPC send path to address ClientToServer messages. Invalid when running as
+        /// Server, Host, or Offline (host has no network self-loop).
+        /// </summary>
+        public ConnectionId ServerConnection {
+            get {
+                if (State != NetworkState.Client) return ConnectionId.Invalid;
+                foreach (var conn in connectionManager.Connections)
+                    return conn;
+                return ConnectionId.Invalid;
+            }
+        }
+
         // ---- Player registries ----
 
         private readonly Dictionary<int, NetworkPlayer> _players = new Dictionary<int, NetworkPlayer>();
@@ -554,6 +568,7 @@ namespace SegNet {
             Messages.RegisterHandler(NetworkMessageType.Despawn, OnMsg_Despawn);
             Messages.RegisterHandler(NetworkMessageType.StateUpdate, OnMsg_StateUpdate);
             Messages.RegisterHandler(NetworkMessageType.Heartbeat, OnMsg_Heartbeat);
+            Messages.RegisterHandler(NetworkMessageType.RPC, OnMsg_Rpc);
         }
 
         private void UnregisterClientMessageHandlers() {
@@ -563,6 +578,7 @@ namespace SegNet {
             Messages.UnregisterHandler(NetworkMessageType.Despawn);
             Messages.UnregisterHandler(NetworkMessageType.StateUpdate);
             Messages.UnregisterHandler(NetworkMessageType.Heartbeat);
+            Messages.UnregisterHandler(NetworkMessageType.RPC);
         }
 
         // ---- Player messages (unchanged) ----
@@ -733,6 +749,91 @@ namespace SegNet {
         }
 
         private void OnMsg_Heartbeat(ConnectionId from, NetworkReader reader) { }
+
+        // ---- RPC ----
+        //
+        // Wire format (after the NetworkMessageType.RPC header has already been stripped
+        // by MessageDispatcher):
+        //   [uint networkId][ushort componentIndex][ushort rpcId][ushort argLen][argBytes...]
+        //
+        // The same handler runs on both server and client. The direction of the RPC is
+        // implicit in the registered dispatch handler — the woven send path only emits
+        // for the correct side, so by the time we receive one we just look it up and run.
+        //
+        // Server-side responsibility: validate that the sender's player owns the target
+        // before invoking. This prevents clients from issuing RPCs against objects they
+        // don't own. (No equivalent check on the client — it trusts the server.)
+
+        private void OnMsg_Rpc(ConnectionId from, NetworkReader reader) {
+            uint networkId;
+            ushort componentIndex;
+            ushort rpcId;
+            ushort argLen;
+            try {
+                networkId = reader.ReadUInt();
+                componentIndex = reader.ReadUShort();
+                rpcId = reader.ReadUShort();
+                argLen = reader.ReadUShort();
+            } catch (Exception ex) {
+                Debug.LogWarning($"[ServerManager] RPC header malformed from {from}: {ex.Message}");
+                return;
+            }
+
+            byte[] argBytes = argLen > 0 ? reader.ReadRawBytes(argLen) : Array.Empty<byte>();
+
+            if (!_networkedObjects.TryGetValue(networkId, out var root) || root == null) {
+                Debug.LogWarning(
+                    $"[ServerManager] RPC 0x{rpcId:X4}: target networkId {networkId} not found.");
+                return;
+            }
+
+            var behaviours = root.AllBehaviours ?? new[] { root };
+            if (componentIndex >= behaviours.Length) {
+                Debug.LogWarning(
+                    $"[ServerManager] RPC 0x{rpcId:X4}: componentIndex {componentIndex} out of range " +
+                    $"(behaviours.Length={behaviours.Length}).");
+                return;
+            }
+
+            var target = behaviours[componentIndex];
+            if (target == null) {
+                Debug.LogWarning($"[ServerManager] RPC 0x{rpcId:X4}: target behaviour is null.");
+                return;
+            }
+
+            // Server-side authority check: only the owner may send RPCs targeting an object.
+            // (Clients accept whatever the server forwards — no check here.)
+            if (IsServer) {
+                if (!_connectionToPlayer.TryGetValue(from, out var senderPlayer)) {
+                    Debug.LogWarning(
+                        $"[ServerManager] RPC 0x{rpcId:X4} from unknown connection {from}; rejected.");
+                    return;
+                }
+                if (target.OwnerPlayer != senderPlayer) {
+                    Debug.LogWarning(
+                        $"[ServerManager] RPC 0x{rpcId:X4} from player {senderPlayer.PlayerId} " +
+                        $"on object owned by " +
+                        $"{(target.OwnerPlayer != null ? "player " + target.OwnerPlayer.PlayerId : "world")}; " +
+                        "rejected.");
+                    return;
+                }
+            }
+
+            if (!RpcRegistry.TryGetHandler(rpcId, out var handler)) {
+                Debug.LogWarning(
+                    $"[ServerManager] RPC 0x{rpcId:X4}: no handler registered. " +
+                    "Either the IL weaver hasn't run yet, or this rpcId is unknown.");
+                return;
+            }
+
+            var argReader = new NetworkReader(argBytes);
+            try {
+                handler(target, argReader);
+            } catch (Exception ex) {
+                Debug.LogError(
+                    $"[ServerManager] RPC 0x{rpcId:X4} on '{target.name}' threw: {ex}");
+            }
+        }
 
         // ==================================================================
         //  Player creation / destruction

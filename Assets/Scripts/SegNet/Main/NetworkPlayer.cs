@@ -31,7 +31,7 @@ namespace SegNet {
         public bool IsHost { get; internal set; }
 
         /// <summary>Optional primary NetworkBehaviour owned by this player (e.g. a player character).</summary>
-        public NetworkBehaviour PrimaryBehaviour { get; internal set; }
+        public NetworkBehaviour PrimaryBehaviour { get; set; }
 
         // ---- Owned objects ----
 

@@ -176,6 +176,34 @@ namespace SegNet {
             WriteInt(v.z);
         }
 
+        // ---- NetworkBehaviour / NetworkPlayer references ----
+        //
+        // Reference types are serialized by stable ID, not value. The reader resolves
+        // the ID back to an instance via ServerManager. Null and unspawned objects
+        // (or unknown players) round-trip as null.
+
+        /// <summary>
+        /// Writes a NetworkBehaviour reference as its NetworkId.
+        /// Null or not-yet-spawned behaviours serialize as 0.
+        /// </summary>
+        public void WriteNetworkBehaviour(NetworkBehaviour behaviour) {
+            if (behaviour == null || !behaviour.IsSpawned)
+                WriteUInt(0u);
+            else
+                WriteUInt(behaviour.NetworkId);
+        }
+
+        /// <summary>
+        /// Writes a NetworkPlayer reference as its PlayerId.
+        /// Null serializes as -1.
+        /// </summary>
+        public void WriteNetworkPlayer(NetworkPlayer player) {
+            if (player == null)
+                WriteInt(-1);
+            else
+                WriteInt(player.PlayerId);
+        }
+
         // ---- Raw bytes ----
 
         /// <summary>Writes length-prefixed byte array. Null is written as length -1.</summary>
