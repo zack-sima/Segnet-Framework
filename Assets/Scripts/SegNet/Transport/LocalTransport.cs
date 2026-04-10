@@ -217,7 +217,12 @@ namespace SegNet {
                 if (client == null || !client.Connected) return false;
 
                 NetworkStream stream = client.GetStream();
-                if (!stream.DataAvailable) return true;
+                if (!stream.DataAvailable) {
+                    if (IsRemoteClosed(client))
+                        return false;
+
+                    return true;
+                }
 
                 if (!_receiveBuffers.TryGetValue(client, out var buf)) return false;
 
@@ -284,6 +289,16 @@ namespace SegNet {
 
         private static void CloseSocket(TcpClient client) {
             try { client?.Close(); } catch { }
+        }
+
+        private static bool IsRemoteClosed(TcpClient client) {
+            try {
+                Socket socket = client.Client;
+                return socket == null
+                       || (socket.Poll(0, SelectMode.SelectRead) && socket.Available == 0);
+            } catch {
+                return true;
+            }
         }
 
         private void ProcessPendingClientConnect() {

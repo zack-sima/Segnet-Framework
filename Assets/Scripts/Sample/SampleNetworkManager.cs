@@ -14,11 +14,14 @@ public class SampleNetworkManager : NetworkManager {
         }
 
         ServerManager.Instance.OnPlayerJoined += HandlePlayerJoined;
+        ServerManager.Instance.OnClientDisconnected += HandleClientDisconnected;
     }
 
     private void OnDestroy() {
-        if (ServerManager.Instance != null)
+        if (ServerManager.Instance != null) {
             ServerManager.Instance.OnPlayerJoined -= HandlePlayerJoined;
+            ServerManager.Instance.OnClientDisconnected -= HandleClientDisconnected;
+        }
     }
 
     private void HandlePlayerJoined(NetworkPlayer player) {
@@ -43,5 +46,15 @@ public class SampleNetworkManager : NetworkManager {
 
         if (spawned != null)
             player.PrimaryBehaviour = spawned;
+    }
+
+    private void HandleClientDisconnected(ConnectionId connectionId, DisconnectReason reason) {
+        var serverManager = ServerManager.Instance;
+        if (serverManager == null || serverManager.State != NetworkState.Client)
+            return;
+
+        Debug.LogWarning(
+            $"[SampleNetworkManager] Host disconnected ({reason}). Returning to menu.");
+        StopGame();
     }
 }
