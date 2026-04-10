@@ -29,6 +29,14 @@ namespace SegNet.CodeGen {
 
         private readonly ModuleDefinition _module;
 
+        // Resolved once up-front so every AddInstanceMethod call can walk the Methods
+        // collection directly. Resolving via Cecil's assembly resolver (instead of
+        // reflection) avoids having the reflection importer graft
+        // System.Private.CoreLib into the target assembly's reference table whenever
+        // a writer parameter is a primitive type.
+        private readonly TypeDefinition _writerDef;
+        private readonly TypeDefinition _readerDef;
+
         // Keyed by TypeReference.FullName (matches typeof(T).FullName for our supported types).
         private readonly Dictionary<string, MethodReference> _writers =
             new Dictionary<string, MethodReference>(StringComparer.Ordinal);
@@ -46,35 +54,69 @@ namespace SegNet.CodeGen {
         public SerializerMap(ModuleDefinition targetModule) {
             _module = targetModule ?? throw new ArgumentNullException(nameof(targetModule));
 
-            // Primitives
-            AddInstanceMethod<bool>(nameof(NetworkWriter.WriteBool), nameof(NetworkReader.ReadBool));
-            AddInstanceMethod<byte>(nameof(NetworkWriter.WriteByte), nameof(NetworkReader.ReadByte));
-            AddInstanceMethod<sbyte>(nameof(NetworkWriter.WriteSByte), nameof(NetworkReader.ReadSByte));
-            AddInstanceMethod<short>(nameof(NetworkWriter.WriteShort), nameof(NetworkReader.ReadShort));
-            AddInstanceMethod<ushort>(nameof(NetworkWriter.WriteUShort), nameof(NetworkReader.ReadUShort));
-            AddInstanceMethod<int>(nameof(NetworkWriter.WriteInt), nameof(NetworkReader.ReadInt));
-            AddInstanceMethod<uint>(nameof(NetworkWriter.WriteUInt), nameof(NetworkReader.ReadUInt));
-            AddInstanceMethod<long>(nameof(NetworkWriter.WriteLong), nameof(NetworkReader.ReadLong));
-            AddInstanceMethod<ulong>(nameof(NetworkWriter.WriteULong), nameof(NetworkReader.ReadULong));
-            AddInstanceMethod<float>(nameof(NetworkWriter.WriteFloat), nameof(NetworkReader.ReadFloat));
-            AddInstanceMethod<double>(nameof(NetworkWriter.WriteDouble), nameof(NetworkReader.ReadDouble));
-            AddInstanceMethod<string>(nameof(NetworkWriter.WriteString), nameof(NetworkReader.ReadString));
+            // Import the declaring types (type-only imports are safe — they don't touch
+            // primitive types). Then resolve each to a TypeDefinition so we can walk its
+            // Methods collection without falling through Cecil's reflection importer.
+            var writerRef = _module.ImportReference(typeof(NetworkWriter));
+            var readerRef = _module.ImportReference(typeof(NetworkReader));
+            _writerDef = writerRef.Resolve()
+                ?? throw new InvalidOperationException(
+                    "[SerializerMap] Could not resolve SegNet.NetworkWriter via Cecil. " +
+                    "Is SegNet.Runtime.dll in the ILPP search path?");
+            _readerDef = readerRef.Resolve()
+                ?? throw new InvalidOperationException(
+                    "[SerializerMap] Could not resolve SegNet.NetworkReader via Cecil. " +
+                    "Is SegNet.Runtime.dll in the ILPP search path?");
+
+            // Primitives — pass the exact FullName Cecil uses for the parameter type.
+            AddInstanceMethod<bool>("System.Boolean",
+                nameof(NetworkWriter.WriteBool), nameof(NetworkReader.ReadBool));
+            AddInstanceMethod<byte>("System.Byte",
+                nameof(NetworkWriter.WriteByte), nameof(NetworkReader.ReadByte));
+            AddInstanceMethod<sbyte>("System.SByte",
+                nameof(NetworkWriter.WriteSByte), nameof(NetworkReader.ReadSByte));
+            AddInstanceMethod<short>("System.Int16",
+                nameof(NetworkWriter.WriteShort), nameof(NetworkReader.ReadShort));
+            AddInstanceMethod<ushort>("System.UInt16",
+                nameof(NetworkWriter.WriteUShort), nameof(NetworkReader.ReadUShort));
+            AddInstanceMethod<int>("System.Int32",
+                nameof(NetworkWriter.WriteInt), nameof(NetworkReader.ReadInt));
+            AddInstanceMethod<uint>("System.UInt32",
+                nameof(NetworkWriter.WriteUInt), nameof(NetworkReader.ReadUInt));
+            AddInstanceMethod<long>("System.Int64",
+                nameof(NetworkWriter.WriteLong), nameof(NetworkReader.ReadLong));
+            AddInstanceMethod<ulong>("System.UInt64",
+                nameof(NetworkWriter.WriteULong), nameof(NetworkReader.ReadULong));
+            AddInstanceMethod<float>("System.Single",
+                nameof(NetworkWriter.WriteFloat), nameof(NetworkReader.ReadFloat));
+            AddInstanceMethod<double>("System.Double",
+                nameof(NetworkWriter.WriteDouble), nameof(NetworkReader.ReadDouble));
+            AddInstanceMethod<string>("System.String",
+                nameof(NetworkWriter.WriteString), nameof(NetworkReader.ReadString));
 
             // Unity value types
-            AddInstanceMethod<Vector2>(nameof(NetworkWriter.WriteVector2), nameof(NetworkReader.ReadVector2));
-            AddInstanceMethod<Vector3>(nameof(NetworkWriter.WriteVector3), nameof(NetworkReader.ReadVector3));
-            AddInstanceMethod<Vector4>(nameof(NetworkWriter.WriteVector4), nameof(NetworkReader.ReadVector4));
-            AddInstanceMethod<Quaternion>(nameof(NetworkWriter.WriteQuaternion), nameof(NetworkReader.ReadQuaternion));
-            AddInstanceMethod<Color>(nameof(NetworkWriter.WriteColor), nameof(NetworkReader.ReadColor));
-            AddInstanceMethod<Color32>(nameof(NetworkWriter.WriteColor32), nameof(NetworkReader.ReadColor32));
-            AddInstanceMethod<Vector2Int>(nameof(NetworkWriter.WriteVector2Int), nameof(NetworkReader.ReadVector2Int));
-            AddInstanceMethod<Vector3Int>(nameof(NetworkWriter.WriteVector3Int), nameof(NetworkReader.ReadVector3Int));
+            AddInstanceMethod<Vector2>("UnityEngine.Vector2",
+                nameof(NetworkWriter.WriteVector2), nameof(NetworkReader.ReadVector2));
+            AddInstanceMethod<Vector3>("UnityEngine.Vector3",
+                nameof(NetworkWriter.WriteVector3), nameof(NetworkReader.ReadVector3));
+            AddInstanceMethod<Vector4>("UnityEngine.Vector4",
+                nameof(NetworkWriter.WriteVector4), nameof(NetworkReader.ReadVector4));
+            AddInstanceMethod<Quaternion>("UnityEngine.Quaternion",
+                nameof(NetworkWriter.WriteQuaternion), nameof(NetworkReader.ReadQuaternion));
+            AddInstanceMethod<Color>("UnityEngine.Color",
+                nameof(NetworkWriter.WriteColor), nameof(NetworkReader.ReadColor));
+            AddInstanceMethod<Color32>("UnityEngine.Color32",
+                nameof(NetworkWriter.WriteColor32), nameof(NetworkReader.ReadColor32));
+            AddInstanceMethod<Vector2Int>("UnityEngine.Vector2Int",
+                nameof(NetworkWriter.WriteVector2Int), nameof(NetworkReader.ReadVector2Int));
+            AddInstanceMethod<Vector3Int>("UnityEngine.Vector3Int",
+                nameof(NetworkWriter.WriteVector3Int), nameof(NetworkReader.ReadVector3Int));
 
             // Reference types (serialized by stable ID)
-            AddInstanceMethod<NetworkBehaviour>(
+            AddInstanceMethod<NetworkBehaviour>(NetworkBehaviourFullName,
                 nameof(NetworkWriter.WriteNetworkBehaviour),
                 nameof(NetworkReader.ReadNetworkBehaviour));
-            AddInstanceMethod<NetworkPlayer>(
+            AddInstanceMethod<NetworkPlayer>(NetworkPlayerFullName,
                 nameof(NetworkWriter.WriteNetworkPlayer),
                 nameof(NetworkReader.ReadNetworkPlayer));
 
@@ -156,28 +198,56 @@ namespace SegNet.CodeGen {
         // ----------------------------------------------------------------
 
         /// <summary>
-        /// Resolve <c>NetworkWriter.{writeName}({T})</c> and <c>NetworkReader.{readName}()</c>
-        /// via reflection, import them into the target module, and store under T's full name.
+        /// Find <c>NetworkWriter.{writeName}({paramTypeFullName})</c> and
+        /// <c>NetworkReader.{readName}()</c> on the resolved TypeDefinitions, then
+        /// import the MethodDefinitions into the target module. Using
+        /// MethodDefinition-based import keeps Cecil on the metadata importer path
+        /// rather than the reflection importer, so primitive parameter types stay
+        /// scoped to the target's corlib instead of getting grafted onto the host
+        /// runtime's System.Private.CoreLib.
         /// </summary>
-        private void AddInstanceMethod<T>(string writeName, string readName) {
-            Type t = typeof(T);
-
-            var writeMethod = typeof(NetworkWriter).GetMethod(writeName, new[] { t });
-            if (writeMethod == null) {
+        private void AddInstanceMethod<T>(string paramTypeFullName, string writeName, string readName) {
+            var writeDef = FindMethod(_writerDef, writeName, paramTypeFullName);
+            if (writeDef == null) {
                 throw new InvalidOperationException(
-                    $"[SerializerMap] NetworkWriter.{writeName}({t.Name}) not found via reflection. " +
+                    $"[SerializerMap] NetworkWriter.{writeName}({paramTypeFullName}) not found. " +
                     "Did the runtime API change?");
             }
 
-            var readMethod = typeof(NetworkReader).GetMethod(readName, Type.EmptyTypes);
-            if (readMethod == null) {
+            var readDef = FindMethod(_readerDef, readName /* no params */);
+            if (readDef == null) {
                 throw new InvalidOperationException(
-                    $"[SerializerMap] NetworkReader.{readName}() not found via reflection. " +
+                    $"[SerializerMap] NetworkReader.{readName}() not found. " +
                     "Did the runtime API change?");
             }
 
-            _writers[t.FullName] = _module.ImportReference(writeMethod);
-            _readers[t.FullName] = _module.ImportReference(readMethod);
+            string key = typeof(T).FullName;
+            _writers[key] = _module.ImportReference(writeDef);
+            _readers[key] = _module.ImportReference(readDef);
+        }
+
+        /// <summary>
+        /// Walk a TypeDefinition's Methods collection to find one matching
+        /// <paramref name="name"/> with exactly the given parameter type FullNames.
+        /// Returns null on no match.
+        /// </summary>
+        private static MethodDefinition FindMethod(
+            TypeDefinition type, string name, params string[] paramTypeFullNames) {
+
+            foreach (var m in type.Methods) {
+                if (m.Name != name) continue;
+                if (m.Parameters.Count != paramTypeFullNames.Length) continue;
+
+                bool allMatch = true;
+                for (int i = 0; i < paramTypeFullNames.Length; i++) {
+                    if (m.Parameters[i].ParameterType.FullName != paramTypeFullNames[i]) {
+                        allMatch = false;
+                        break;
+                    }
+                }
+                if (allMatch) return m;
+            }
+            return null;
         }
 
         // ----------------------------------------------------------------

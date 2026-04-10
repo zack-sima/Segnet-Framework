@@ -9,9 +9,20 @@ namespace SegNet.CodeGen {
     /// Cache of all SegNet runtime / framework / mscorlib references the weaver needs
     /// to emit IL into a target module. One instance is built per processed assembly.
     ///
-    /// Everything here has been pre-imported into the target module via reflection
-    /// (typeof / GetMethod), so the weaver can drop these straight into IL operands
-    /// without additional ImportReference calls.
+    /// Everything here is pre-imported into the target module, so the weaver can drop
+    /// these straight into IL operands without additional ImportReference calls.
+    ///
+    /// Implementation note — why we go through <see cref="TypeReference.Resolve"/> +
+    /// Definition walks instead of <c>module.ImportReference(MethodInfo)</c>:
+    /// Cecil's reflection importer scopes primitive parameter types (int, ushort,
+    /// bool, ...) to the host runtime's corlib, which at ILPP runtime is
+    /// <c>System.Private.CoreLib</c>. That assembly is NOT referenced by any
+    /// Unity-compiled target, so every subsequent ILPP (JobsILPP, BurstILPP, the
+    /// player-build UnityLinker) fails to resolve the phantom reference and the
+    /// whole pipeline explodes. Resolving declaring types via Cecil's assembly
+    /// resolver and importing <see cref="MethodDefinition"/>s keeps Cecil on the
+    /// metadata importer path, which correctly remaps types through the target's
+    /// existing corlib reference.
     /// </summary>
     internal sealed class RuntimeRefs {
 
@@ -85,6 +96,9 @@ namespace SegNet.CodeGen {
             var corlibScope = ObjectType.Scope;
 
             // ---- SegNet types ----
+            // Importing a TypeReference (no method signature) is safe: Cecil only adds
+            // the containing assembly (SegNet.Runtime) to the reference list, which the
+            // target already references. No primitive types are touched.
             NetworkBehaviourType = module.ImportReference(typeof(NetworkBehaviour));
             NetworkPlayerType = module.ImportReference(typeof(NetworkPlayer));
             NetworkWriterType = module.ImportReference(typeof(NetworkWriter));
@@ -92,48 +106,41 @@ namespace SegNet.CodeGen {
             RpcDirectionType = module.ImportReference(typeof(RpcDirection));
             ChannelTypeType = module.ImportReference(typeof(ChannelType));
 
+            // Resolve to TypeDefinitions so we can look up method members directly.
+            // We deliberately go through the Cecil assembly resolver (not reflection)
+            // for anything with a method signature that touches primitive types — the
+            // reflection importer would scope those primitives to the host runtime's
+            // System.Private.CoreLib and poison the output assembly's reference table.
+            var nbDef = ResolveOrThrow(NetworkBehaviourType, "SegNet.NetworkBehaviour");
+            var npDef = ResolveOrThrow(NetworkPlayerType, "SegNet.NetworkPlayer");
+            var writerDef = ResolveOrThrow(NetworkWriterType, "SegNet.NetworkWriter");
+
             // ---- NetworkWriter constructors ----
-            NetworkWriterCtor = module.ImportReference(
-                typeof(NetworkWriter).GetConstructor(Type.EmptyTypes)
-                ?? throw new InvalidOperationException("NetworkWriter parameterless ctor not found"));
-            NetworkWriterCtorCapacity = module.ImportReference(
-                typeof(NetworkWriter).GetConstructor(new[] { typeof(int) })
-                ?? throw new InvalidOperationException("NetworkWriter(int) ctor not found"));
+            var writerCtor0 = FindMethod(writerDef, ".ctor")
+                ?? throw new InvalidOperationException("NetworkWriter() ctor not found");
+            var writerCtorN = FindMethod(writerDef, ".ctor", "System.Int32")
+                ?? throw new InvalidOperationException("NetworkWriter(int) ctor not found");
+            NetworkWriterCtor = module.ImportReference(writerCtor0);
+            NetworkWriterCtorCapacity = module.ImportReference(writerCtorN);
 
             // ---- NetworkBehaviour entry points ----
-            // SendRpcInternal is non-public (protected) — need BindingFlags.NonPublic.
-            const System.Reflection.BindingFlags InstanceAny =
-                System.Reflection.BindingFlags.Instance
-                | System.Reflection.BindingFlags.Public
-                | System.Reflection.BindingFlags.NonPublic;
-
-            var sendRpcInfo = typeof(NetworkBehaviour).GetMethod(
-                "SendRpcInternal",
-                InstanceAny,
-                binder: null,
-                types: new[] { typeof(ushort), typeof(RpcDirection), typeof(ChannelType), typeof(NetworkWriter) },
-                modifiers: null);
-            if (sendRpcInfo == null)
-                throw new InvalidOperationException(
+            var sendRpcDef = FindMethod(nbDef, "SendRpcInternal",
+                "System.UInt16", "SegNet.RpcDirection", "SegNet.ChannelType", "SegNet.NetworkWriter")
+                ?? throw new InvalidOperationException(
                     "NetworkBehaviour.SendRpcInternal(ushort, RpcDirection, ChannelType, NetworkWriter) not found");
-            SendRpcInternal = module.ImportReference(sendRpcInfo);
+            SendRpcInternal = module.ImportReference(sendRpcDef);
 
-            var sendRpcToInfo = typeof(NetworkBehaviour).GetMethod(
-                "SendRpcInternalTo",
-                InstanceAny,
-                binder: null,
-                types: new[] { typeof(ushort), typeof(ChannelType), typeof(NetworkWriter), typeof(NetworkPlayer) },
-                modifiers: null);
-            if (sendRpcToInfo == null)
-                throw new InvalidOperationException(
+            var sendRpcToDef = FindMethod(nbDef, "SendRpcInternalTo",
+                "System.UInt16", "SegNet.ChannelType", "SegNet.NetworkWriter", "SegNet.NetworkPlayer")
+                ?? throw new InvalidOperationException(
                     "NetworkBehaviour.SendRpcInternalTo(ushort, ChannelType, NetworkWriter, NetworkPlayer) not found");
-            SendRpcInternalTo = module.ImportReference(sendRpcToInfo);
+            SendRpcInternalTo = module.ImportReference(sendRpcToDef);
 
-            IsHostGetter = ImportPropertyGetter(module, typeof(NetworkBehaviour), "IsHost");
-            IsClientGetter = ImportPropertyGetter(module, typeof(NetworkBehaviour), "IsClient");
-            IsServerGetter = ImportPropertyGetter(module, typeof(NetworkBehaviour), "IsServer");
-            OwnerPlayerGetter = ImportPropertyGetter(module, typeof(NetworkBehaviour), "OwnerPlayer");
-            NetworkPlayerIsLocalGetter = ImportPropertyGetter(module, typeof(NetworkPlayer), "IsLocal");
+            IsHostGetter = module.ImportReference(GetPropertyGetterOrThrow(nbDef, "IsHost"));
+            IsClientGetter = module.ImportReference(GetPropertyGetterOrThrow(nbDef, "IsClient"));
+            IsServerGetter = module.ImportReference(GetPropertyGetterOrThrow(nbDef, "IsServer"));
+            OwnerPlayerGetter = module.ImportReference(GetPropertyGetterOrThrow(nbDef, "OwnerPlayer"));
+            NetworkPlayerIsLocalGetter = module.ImportReference(GetPropertyGetterOrThrow(npDef, "IsLocal"));
 
             // ---- Action`2 (open) — built by hand against the target's corlib scope ----
             // We deliberately do NOT call module.ImportReference(typeof(Action<,>)) here:
@@ -163,9 +170,11 @@ namespace SegNet.CodeGen {
             DispatchActionCtor = actionCtor;
 
             // ---- RpcRegistry.Register ----
-            // Built by hand for the same reason as Action`2: importing the MethodInfo
-            // via reflection would transitively import its Action<NB,NR> parameter type
-            // through the host runtime's corlib, re-introducing the resolution bug.
+            // Built by hand: importing the MethodInfo via reflection would transitively
+            // import its Action<NB,NR> parameter through the host runtime's corlib,
+            // re-introducing the same resolution bug. We keep the DeclaringType import
+            // (safe — it's a SegNet type) but attach the parameters ourselves using
+            // module-local TypeReferences.
             var rpcRegistryType = module.ImportReference(typeof(RpcRegistry));
             var registerRef = new MethodReference("Register", VoidType, rpcRegistryType) {
                 HasThis = false,
@@ -177,31 +186,83 @@ namespace SegNet.CodeGen {
             RpcRegistryRegister = registerRef;
 
             // ---- Unity RuntimeInitializeOnLoadMethodAttribute ----
+            // Type-only imports are safe (UnityEngine.CoreModule is already referenced).
+            // The ctor is built by hand so we don't let Cecil re-scope the enum param
+            // through the host runtime.
             RuntimeInitializeOnLoadAttrType =
                 module.ImportReference(typeof(RuntimeInitializeOnLoadMethodAttribute));
-            var attrCtor = typeof(RuntimeInitializeOnLoadMethodAttribute)
-                .GetConstructor(new[] { typeof(RuntimeInitializeLoadType) });
-            if (attrCtor == null)
-                throw new InvalidOperationException(
-                    "RuntimeInitializeOnLoadMethodAttribute(RuntimeInitializeLoadType) ctor not found");
-            RuntimeInitializeOnLoadAttrCtor = module.ImportReference(attrCtor);
             RuntimeInitializeLoadTypeRef = module.ImportReference(typeof(RuntimeInitializeLoadType));
+
+            var riolCtor = new MethodReference(".ctor", VoidType, RuntimeInitializeOnLoadAttrType) {
+                HasThis = true,
+                ExplicitThis = false,
+                CallingConvention = MethodCallingConvention.Default,
+            };
+            riolCtor.Parameters.Add(new ParameterDefinition(RuntimeInitializeLoadTypeRef));
+            RuntimeInitializeOnLoadAttrCtor = riolCtor;
 
             SubsystemRegistrationValue = (int)RuntimeInitializeLoadType.SubsystemRegistration;
         }
 
         // ----------------------------------------------------------------
-        //  Helpers
+        //  Helpers — Definition walks (no reflection-based import)
         // ----------------------------------------------------------------
 
-        private static MethodReference ImportPropertyGetter(
-            ModuleDefinition module, Type declaringType, string propertyName) {
-
-            var prop = declaringType.GetProperty(propertyName);
-            if (prop == null || prop.GetGetMethod() == null)
+        /// <summary>
+        /// Resolve a TypeReference to its TypeDefinition via Cecil's assembly resolver,
+        /// throwing a clear error if the declaring assembly cannot be loaded. Used so
+        /// the constructor can walk Methods/Properties directly instead of using the
+        /// reflection importer (which would graft in host-corlib refs for primitive
+        /// parameter types).
+        /// </summary>
+        private static TypeDefinition ResolveOrThrow(TypeReference typeRef, string friendlyName) {
+            var def = typeRef.Resolve();
+            if (def == null)
                 throw new InvalidOperationException(
-                    $"Property {declaringType.Name}.{propertyName} (or its getter) not found");
-            return module.ImportReference(prop.GetGetMethod());
+                    $"[RuntimeRefs] Could not resolve {friendlyName} — Cecil assembly " +
+                    "resolver did not find the declaring assembly. Check ILPP search dirs.");
+            return def;
+        }
+
+        /// <summary>
+        /// Find a method on a TypeDefinition by name + parameter type FullNames.
+        /// Returns null on no match so callers can throw context-specific errors.
+        /// Matches by <see cref="TypeReference.FullName"/>, which is stable for both
+        /// primitives ("System.Int32") and namespaced types ("SegNet.NetworkWriter").
+        /// </summary>
+        private static MethodDefinition FindMethod(
+            TypeDefinition type, string name, params string[] paramTypeFullNames) {
+
+            foreach (var m in type.Methods) {
+                if (m.Name != name) continue;
+                if (m.Parameters.Count != paramTypeFullNames.Length) continue;
+
+                bool allMatch = true;
+                for (int i = 0; i < paramTypeFullNames.Length; i++) {
+                    if (m.Parameters[i].ParameterType.FullName != paramTypeFullNames[i]) {
+                        allMatch = false;
+                        break;
+                    }
+                }
+                if (allMatch) return m;
+            }
+            return null;
+        }
+
+        /// <summary>Get a property's getter MethodDefinition, throwing if missing.</summary>
+        private static MethodDefinition GetPropertyGetterOrThrow(
+            TypeDefinition type, string propertyName) {
+
+            foreach (var p in type.Properties) {
+                if (p.Name == propertyName) {
+                    if (p.GetMethod == null)
+                        throw new InvalidOperationException(
+                            $"[RuntimeRefs] Property {type.FullName}.{propertyName} has no getter.");
+                    return p.GetMethod;
+                }
+            }
+            throw new InvalidOperationException(
+                $"[RuntimeRefs] Property {type.FullName}.{propertyName} not found.");
         }
     }
 }
