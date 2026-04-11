@@ -16,30 +16,25 @@ namespace SegNet {
         public bool IsServer => _transport != null && _transport.Role == NetRole.Server;
         public bool IsClient => _transport != null && _transport.Role == NetRole.Client;
         public int MaxPacketSize => _transport != null ? _transport.MaxPacketSize : 1200;
+        public ITransport ActiveTransport => _transport;
+        public long TotalBytesIn { get; private set; }
+        public long TotalBytesOut { get; private set; }
 
         public event Action<ConnectionId> OnClientConnected;
         public event Action<ConnectionId, DisconnectReason> OnClientDisconnected;
         public event Action<ConnectionId, ArraySegment<byte>, ChannelType> OnData;
+        public event Action<int> OnBytesIn;
+        public event Action<int> OnBytesOut;
 
         private void Awake() {
-            _transport = transportBehaviour as ITransport;
-            if (_transport == null) {
-                Debug.LogError("[NetworkConnectionManager] Transport behaviour does not implement ITransport.");
-                enabled = false;
-                return;
-            }
-
-            _transport.OnConnected += HandleConnected;
-            _transport.OnDisconnected += HandleDisconnected;
-            _transport.OnData += HandleData;
+            if (transportBehaviour != null)
+                SetTransport(transportBehaviour);
+            else
+                Debug.LogWarning("[NetworkConnectionManager] No transport assigned yet.");
         }
 
         private void OnDestroy() {
-            if (_transport != null) {
-                _transport.OnConnected -= HandleConnected;
-                _transport.OnDisconnected -= HandleDisconnected;
-                _transport.OnData -= HandleData;
-            }
+            DetachTransport();
         }
 
         private void Update() {
@@ -62,18 +57,75 @@ namespace SegNet {
 
         private void HandleData(ConnectionId from, ArraySegment<byte> payload, ChannelType channel) {
             _lastReceiveTime = Time.realtimeSinceStartup;
+            TrackBytesIn(payload.Count);
             OnData?.Invoke(from, payload, channel);
         }
 
-        public void Host() {
-            _timeoutTriggered = false;
-            _transport?.StartServer();
+        public bool SetTransport(MonoBehaviour transport) {
+            return SetTransport(transport as ITransport, transport);
         }
 
-        public void Join() {
+        public bool SetTransport(ITransport transport) {
+            return SetTransport(transport, transport as MonoBehaviour);
+        }
+
+        private bool SetTransport(ITransport transport, MonoBehaviour behaviour) {
+            if (transport == null) {
+                Debug.LogError("[NetworkConnectionManager] Transport behaviour does not implement ITransport.");
+                return false;
+            }
+
+            if (_transport == transport)
+                return true;
+
+            if (_transport != null && _transport.IsRunning) {
+                Debug.LogWarning("[NetworkConnectionManager] Stopping active transport before swap.");
+                StopAll();
+            }
+
+            DetachTransport();
+
+            transportBehaviour = behaviour;
+            _transport = transport;
+            _transport.Initialize();
+            _transport.OnConnected += HandleConnected;
+            _transport.OnDisconnected += HandleDisconnected;
+            _transport.OnData += HandleData;
+
+            _connections.Clear();
             _timeoutTriggered = false;
             _lastReceiveTime = Time.realtimeSinceStartup;
-            _transport?.StartClient();
+
+            Debug.Log($"[NetworkConnectionManager] Active transport: {transport.GetType().Name}");
+            return true;
+        }
+
+        public void ResetByteCounters() {
+            TotalBytesIn = 0;
+            TotalBytesOut = 0;
+        }
+
+        public bool Host() {
+            _timeoutTriggered = false;
+            if (_transport == null) {
+                Debug.LogError("[NetworkConnectionManager] Cannot host: no active transport.");
+                return false;
+            }
+
+            _transport.StartServer();
+            return _transport.IsRunning && _transport.Role == NetRole.Server;
+        }
+
+        public bool Join() {
+            _timeoutTriggered = false;
+            _lastReceiveTime = Time.realtimeSinceStartup;
+            if (_transport == null) {
+                Debug.LogError("[NetworkConnectionManager] Cannot join: no active transport.");
+                return false;
+            }
+
+            _transport.StartClient();
+            return _transport.IsRunning && _transport.Role == NetRole.Client;
         }
 
         public void StopAll() {
@@ -98,11 +150,17 @@ namespace SegNet {
         public IReadOnlyCollection<ConnectionId> Connections => _connections;
 
         public void SendTo(ConnectionId target, ArraySegment<byte> payload, ChannelType channel) {
-            _transport?.Send(target, payload, channel);
+            if (_transport == null) return;
+
+            _transport.Send(target, payload, channel);
+            TrackBytesOut(payload.Count);
         }
 
         public void Broadcast(ArraySegment<byte> payload, ChannelType channel) {
-            _transport?.Broadcast(payload, channel);
+            if (_transport == null) return;
+
+            _transport.Broadcast(payload, channel);
+            TrackBytesOut(payload.Count * _connections.Count);
         }
 
         public void Disconnect(ConnectionId target) {
@@ -135,6 +193,28 @@ namespace SegNet {
             _transport.Stop();
             _connections.Clear();
             OnClientDisconnected?.Invoke(timedOut, DisconnectReason.Timeout);
+        }
+
+        private void DetachTransport() {
+            if (_transport == null)
+                return;
+
+            _transport.OnConnected -= HandleConnected;
+            _transport.OnDisconnected -= HandleDisconnected;
+            _transport.OnData -= HandleData;
+            _transport = null;
+        }
+
+        private void TrackBytesIn(int byteCount) {
+            if (byteCount <= 0) return;
+            TotalBytesIn += byteCount;
+            OnBytesIn?.Invoke(byteCount);
+        }
+
+        private void TrackBytesOut(int byteCount) {
+            if (byteCount <= 0) return;
+            TotalBytesOut += byteCount;
+            OnBytesOut?.Invoke(byteCount);
         }
     }
 }

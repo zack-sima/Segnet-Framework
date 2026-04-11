@@ -135,7 +135,7 @@ GameObject:
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
-  m_IsActive: 0
+  m_IsActive: 1
 --- !u!114 &68902652
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -1484,7 +1484,7 @@ GameObject:
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
-  m_IsActive: 0
+  m_IsActive: 1
 --- !u!114 &1234387790
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -1506,11 +1506,11 @@ Transform:
   m_GameObject: {fileID: 1234387789}
   serializedVersion: 2
   m_LocalRotation: {x: -0, y: -0, z: -0, w: 1}
-  m_LocalPosition: {x: -896, y: -525.5, z: 0}
+  m_LocalPosition: {x: 0, y: 0, z: 0}
   m_LocalScale: {x: 1, y: 1, z: 1}
   m_ConstrainProportionsScale: 0
   m_Children: []
-  m_Father: {fileID: 1923332959}
+  m_Father: {fileID: 1557631542}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
 --- !u!1 &1374195624
 GameObject:
@@ -1711,10 +1711,16 @@ MonoBehaviour:
   m_EditorClassIdentifier: 
   gameScene: Sample Game Scene
   menuScene: Sample Menu Scene
+  connectionManager: {fileID: 0}
+  kbIn: 0
+  kbOut: 0
   samplePlayerPrefab: {fileID: 7370686485846436604, guid: fd3898e4245404ec4a4016a6748d1064, type: 3}
   spawnOrigin: {x: 0, y: 0, z: 0}
   spawnSpacing: 2
   testMessage: hello, client
+  localTransport: {fileID: 872395269}
+  steamTransport: {fileID: 68902652}
+  useSteamTransport: 1
   testSpawnPrefab: {fileID: 2238453962375176072, guid: b9255958220c8423ab0ce6673f07a721, type: 3}
 --- !u!4 &1557631542
 Transform:
@@ -1733,6 +1739,7 @@ Transform:
   - {fileID: 1724145624}
   - {fileID: 1165363679}
   - {fileID: 816252596}
+  - {fileID: 1234387791}
   - {fileID: 1923332959}
   m_Father: {fileID: 0}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
@@ -2094,7 +2101,6 @@ Transform:
   m_ConstrainProportionsScale: 0
   m_Children:
   - {fileID: 68902653}
-  - {fileID: 1234387791}
   - {fileID: 872395268}
   m_Father: {fileID: 1557631542}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}

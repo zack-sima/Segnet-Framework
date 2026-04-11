@@ -18,26 +18,19 @@ using Steamworks;
 namespace SegNet {
 
     [DisallowMultipleComponent]
+    [DefaultExecutionOrder(-1000)]
     public class SteamManager : MonoBehaviour {
 #if !DISABLESTEAMWORKS
         protected static bool s_EverInitialized = false;
 
         protected static SteamManager s_instance;
         protected static SteamManager Instance {
-            get {
-                if (s_instance == null) {
-                    return new GameObject("SteamManager").AddComponent<SteamManager>();
-                } else {
-                    return s_instance;
-                }
-            }
+            get { return s_instance; }
         }
 
         protected bool m_bInitialized = false;
         public static bool Initialized {
-            get {
-                return Instance.m_bInitialized;
-            }
+            get { return s_instance != null && s_instance.m_bInitialized; }
         }
 
         protected SteamAPIWarningMessageHook_t m_SteamAPIWarningMessageHook;

@@ -20,7 +20,17 @@ namespace SegNet {
         [Tooltip("Optional scene to load after exiting the current network session.")]
         [SerializeField] private string menuScene;
 
+        [Header("Transport")]
+        [SerializeField] private NetworkConnectionManager connectionManager;
+
+        [Header("Traffic")]
+        [SerializeField] private float kbIn;
+        [SerializeField] private float kbOut;
+
         private bool _isTransitioning;
+        private long _lastStatBytesIn;
+        private long _lastStatBytesOut;
+        private float _lastStatTime;
 
         public event Action<NetworkBehaviour> OnObjectSpawned;
         public event Action<NetworkBehaviour> OnObjectDespawned;
@@ -44,6 +54,8 @@ namespace SegNet {
 
         public bool IsOffline => State == NetworkState.Offline;
         public bool IsStarting => State == NetworkState.Starting;
+        public float KbIn => kbIn;
+        public float KbOut => kbOut;
 
         public bool ConnectionActive {
             get {
@@ -74,6 +86,8 @@ namespace SegNet {
 
             Instance = this;
             DontDestroyOnLoad(transform.root.gameObject);
+            ResolveConnectionManager();
+            ResetBandwidthStats();
         }
 
         protected virtual void Start() {
@@ -110,12 +124,21 @@ namespace SegNet {
             }
         }
 
+        protected virtual void LateUpdate() {
+            UpdateBandwidthStats();
+        }
+
         private void HandleClientDisconnected(ConnectionId connectionId, DisconnectReason reason) {
             var sm = ServerManager.Instance;
-            if (sm == null || sm.State != NetworkState.Client)
+            if (sm == null)
                 return;
 
-            Debug.LogWarning($"[NetworkManager] Lost host connection ({reason}). Returning to menu.");
+            bool transportStartupFailed = connectionId == ConnectionId.Invalid &&
+                (sm.State == NetworkState.Server || sm.State == NetworkState.Host);
+            if (sm.State != NetworkState.Client && !transportStartupFailed)
+                return;
+
+            Debug.LogWarning($"[NetworkManager] Transport disconnected ({reason}). Returning to menu.");
             StopGame();
         }
 
@@ -151,12 +174,15 @@ namespace SegNet {
 
             switch (targetState) {
                 case NetworkState.Server:
+                    ResetBandwidthStats();
                     sm.StartServer();
                     break;
                 case NetworkState.Host:
+                    ResetBandwidthStats();
                     sm.StartHost();
                     break;
                 case NetworkState.Client:
+                    ResetBandwidthStats();
                     sm.StartClient();
                     break;
             }
@@ -193,6 +219,34 @@ namespace SegNet {
         public void StartServer() => StartCoroutine(BeginSession(NetworkState.Server));
         public void StopGame() => StartCoroutine(ExitSession());
 
+        public bool SetTransport(MonoBehaviour transportBehaviour) {
+            if (!ResolveConnectionManager())
+                return false;
+            if (!IsOffline) {
+                Debug.LogWarning("[NetworkManager] Cannot swap transport while network session is active.");
+                return false;
+            }
+
+            bool swapped = connectionManager.SetTransport(transportBehaviour);
+            if (swapped)
+                ResetBandwidthStats();
+            return swapped;
+        }
+
+        public bool SetTransport(ITransport transport) {
+            if (!ResolveConnectionManager())
+                return false;
+            if (!IsOffline) {
+                Debug.LogWarning("[NetworkManager] Cannot swap transport while network session is active.");
+                return false;
+            }
+
+            bool swapped = connectionManager.SetTransport(transport);
+            if (swapped)
+                ResetBandwidthStats();
+            return swapped;
+        }
+
         public NetworkBehaviour ServerSpawn(GameObject prefab, Vector3 position, Quaternion rotation,
             NetworkPlayer owner = null) {
             var sm = ServerManager.Instance;
@@ -217,6 +271,54 @@ namespace SegNet {
         public NetworkBehaviour GetNetworkObject(uint networkId) {
             var sm = ServerManager.Instance;
             return sm != null ? sm.GetNetworkObject(networkId) : null;
+        }
+
+        private bool ResolveConnectionManager() {
+            if (connectionManager != null)
+                return true;
+
+            var sm = ServerManager.Instance;
+            if (sm != null)
+                connectionManager = sm.GetComponentInChildren<NetworkConnectionManager>(true);
+
+            if (connectionManager == null)
+                connectionManager = GetComponentInChildren<NetworkConnectionManager>(true);
+
+            if (connectionManager == null)
+                Debug.LogError("[NetworkManager] NetworkConnectionManager reference is missing.");
+
+            return connectionManager != null;
+        }
+
+        private void ResetBandwidthStats() {
+            if (ResolveConnectionManager())
+                connectionManager.ResetByteCounters();
+
+            kbIn = 0f;
+            kbOut = 0f;
+            _lastStatBytesIn = 0;
+            _lastStatBytesOut = 0;
+            _lastStatTime = Time.unscaledTime;
+        }
+
+        private void UpdateBandwidthStats() {
+            if (!ResolveConnectionManager())
+                return;
+
+            float now = Time.unscaledTime;
+            float elapsed = now - _lastStatTime;
+            if (elapsed < 1f)
+                return;
+
+            long bytesIn = connectionManager.TotalBytesIn;
+            long bytesOut = connectionManager.TotalBytesOut;
+
+            kbIn = (bytesIn - _lastStatBytesIn) / 1024f / elapsed;
+            kbOut = (bytesOut - _lastStatBytesOut) / 1024f / elapsed;
+
+            _lastStatBytesIn = bytesIn;
+            _lastStatBytesOut = bytesOut;
+            _lastStatTime = now;
         }
     }
 }

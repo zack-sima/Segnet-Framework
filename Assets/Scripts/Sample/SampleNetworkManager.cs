@@ -9,8 +9,7 @@ public class SampleNetworkManager : NetworkManager {
 
     [Header("Test")]
     [SerializeField] private string testMessage = "hello, network";
-    [SerializeField] private NetworkConnectionManager connectionManager;
-    [SerializeField] private ITransport localTransport, steamTransport;
+    [SerializeField] private MonoBehaviour localTransport, steamTransport;
     [SerializeField] private bool useSteamTransport;
 
     [Tooltip("Assign a prefab from the PrefabRegistry to test runtime spawning.")]
@@ -21,11 +20,7 @@ public class SampleNetworkManager : NetworkManager {
     private NetworkBehaviour _lastSpawned;
 
     protected override void Start() {
-        if (useSteamTransport) {
-            //TODO: swap with transport
-        } else {
-
-        }
+        ApplySelectedTransport();
 
         base.Start();
 
@@ -37,6 +32,21 @@ public class SampleNetworkManager : NetworkManager {
         ServerManager.Instance.Messages.RegisterHandler(TestMessageType, OnTestMessageReceived);
         ServerManager.Instance.OnPlayerJoined += HandlePlayerJoined;
         ServerManager.Instance.OnClientDisconnected += HandleClientDisconnected;
+    }
+
+    private void ApplySelectedTransport() {
+        MonoBehaviour selected = useSteamTransport ? steamTransport : localTransport;
+        if (selected == null) {
+            Debug.LogWarning(
+                $"[SampleNetworkManager] {(useSteamTransport ? "Steam" : "Local")} transport is not assigned.");
+            return;
+        }
+
+        if (SetTransport(selected)) {
+            Debug.Log(
+                $"[SampleNetworkManager] Using {(useSteamTransport ? "Steam" : "Local")} transport " +
+                $"({selected.GetType().Name}).");
+        }
     }
 
     protected override void OnDestroy() {

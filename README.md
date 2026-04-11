@@ -9,6 +9,7 @@ Specifics:
 - On quit game, all instances for networking are destroyed
 - RPC hook callback is called on host as well
 - Limit of 64 SyncVars per NetworkBehaviour (ulong bitmask limit)
+- Use NetworkManager's kbIn and kbOut for debugging bandwidth used
 
 Synced Collections:
 

@@ -19,6 +19,7 @@ namespace SegNet {
         private Callback<LobbyEnter_t> _lobbyEnter;
         private Callback<GameLobbyJoinRequested_t> _lobbyJoinRequested;
         private Callback<SteamNetConnectionStatusChangedCallback_t> _connStatusChanged;
+        private bool _initialized;
 
         private CSteamID _lobbyId;
         private HSteamListenSocket _listenSocket = HSteamListenSocket.Invalid;
@@ -38,6 +39,9 @@ namespace SegNet {
         public event Action<ConnectionId, ArraySegment<byte>, ChannelType> OnData;
 
         public void Initialize() {
+            if (_initialized)
+                return;
+
             if (!SteamManager.Initialized) {
                 Debug.LogWarning("[SteamTransport] SteamManager not initialized.");
                 return;
@@ -51,6 +55,7 @@ namespace SegNet {
 
             Role = NetRole.None;
             IsRunning = false;
+            _initialized = true;
         }
 
         public void Shutdown() {
@@ -66,8 +71,13 @@ namespace SegNet {
         }
 
         public void StartServer() {
-            if (!SteamManager.Initialized || IsRunning)
+            if (IsRunning)
                 return;
+            if (!SteamManager.Initialized) {
+                Debug.LogWarning("[SteamTransport] Cannot start server: SteamManager not initialized.");
+                FailStartup(DisconnectReason.TransportError);
+                return;
+            }
 
             Debug.Log("[SteamTransport] StartServer -> creating lobby");
             Role = NetRole.Server;
@@ -77,8 +87,13 @@ namespace SegNet {
         }
 
         public void StartClient() {
-            if (!SteamManager.Initialized || IsRunning)
+            if (IsRunning)
                 return;
+            if (!SteamManager.Initialized) {
+                Debug.LogWarning("[SteamTransport] Cannot start client: SteamManager not initialized.");
+                FailStartup(DisconnectReason.TransportError);
+                return;
+            }
 
             Debug.Log("[SteamTransport] StartClient -> requesting lobby list");
             Role = NetRole.Client;
@@ -101,6 +116,11 @@ namespace SegNet {
             if (_listenSocket != HSteamListenSocket.Invalid) {
                 SteamNetworkingSockets.CloseListenSocket(_listenSocket);
                 _listenSocket = HSteamListenSocket.Invalid;
+            }
+
+            if (SteamManager.Initialized && _lobbyId.IsValid()) {
+                SteamMatchmaking.LeaveLobby(_lobbyId);
+                _lobbyId = CSteamID.Nil;
             }
 
             Role = NetRole.None;
@@ -152,6 +172,7 @@ namespace SegNet {
         private void OnLobbyCreated(LobbyCreated_t cb) {
             if (cb.m_eResult != EResult.k_EResultOK) {
                 Debug.LogError("[SteamTransport] Lobby creation failed: " + cb.m_eResult);
+                FailStartup(DisconnectReason.TransportError);
                 return;
             }
 
@@ -170,6 +191,7 @@ namespace SegNet {
 
             if (cb.m_nLobbiesMatching <= 0) {
                 Debug.LogWarning("[SteamTransport] No lobbies found.");
+                FailStartup(DisconnectReason.TransportError);
                 return;
             }
 
@@ -233,13 +255,21 @@ namespace SegNet {
         }
 
         private void HandleDisconnect(HSteamNetConnection hConn, DisconnectReason reason) {
-            if (!_connToId.TryGetValue(hConn, out var id))
+            if (!_connToId.TryGetValue(hConn, out var id)) {
+                if (Role == NetRole.Client)
+                    FailStartup(reason);
                 return;
+            }
 
             _connToId.Remove(hConn);
             _idToConn.Remove(id.Value);
 
             OnDisconnected?.Invoke(id, reason);
+        }
+
+        private void FailStartup(DisconnectReason reason) {
+            Stop();
+            OnDisconnected?.Invoke(ConnectionId.Invalid, reason);
         }
 
         // ---------- Send / Receive internals ----------
@@ -314,6 +344,7 @@ namespace SegNet {
 
         private void OnDestroy() {
             Shutdown();
+            _initialized = false;
         }
     }
 }

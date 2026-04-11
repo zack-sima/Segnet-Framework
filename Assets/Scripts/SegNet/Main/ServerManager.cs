@@ -148,7 +148,10 @@ namespace SegNet {
 
             State = NetworkState.Starting;
             RegisterClientMessageHandlers();
-            connectionManager.Host();
+            if (!connectionManager.Host()) {
+                AbortStart("server");
+                return;
+            }
             State = NetworkState.Server;
 
             ActivateSceneObjects();
@@ -165,7 +168,10 @@ namespace SegNet {
 
             State = NetworkState.Starting;
             RegisterClientMessageHandlers();
-            connectionManager.Host();
+            if (!connectionManager.Host()) {
+                AbortStart("host");
+                return;
+            }
             State = NetworkState.Host;
 
             // Create host's local player
@@ -185,7 +191,10 @@ namespace SegNet {
 
             State = NetworkState.Starting;
             RegisterClientMessageHandlers();
-            connectionManager.Join();
+            if (!connectionManager.Join()) {
+                AbortStart("client");
+                return;
+            }
             State = NetworkState.Client;
 
             Debug.Log("[ServerManager] Started as Client.");
@@ -215,6 +224,13 @@ namespace SegNet {
 
             Debug.Log($"[ServerManager] Stopped (was {previousState}).");
             OnStopped?.Invoke();
+        }
+
+        private void AbortStart(string mode) {
+            UnregisterClientMessageHandlers();
+            connectionManager.StopAll();
+            State = NetworkState.Offline;
+            Debug.LogError($"[ServerManager] Failed to start {mode}: transport did not start.");
         }
 
         // ==================================================================
