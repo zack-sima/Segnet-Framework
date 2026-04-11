@@ -64,12 +64,12 @@ public class SampleNetworkManager : NetworkManager {
             if (Input.GetKeyDown(KeyCode.T) && testSpawnPrefab != null) {
                 Vector3 pos = new Vector3(
                     Random.Range(-3f, 3f), 0f, Random.Range(-3f, 3f));
-                _lastSpawned = ServerSpawn(testSpawnPrefab, pos, Quaternion.identity);
+                _lastSpawned = NetworkBehaviour.InstantiateNetworked(testSpawnPrefab, pos, Quaternion.identity);
                 Debug.Log($"[SampleNetworkManager] Spawned: {_lastSpawned}");
             }
 
             if (Input.GetKeyDown(KeyCode.D) && _lastSpawned != null) {
-                ServerDespawn(_lastSpawned);
+                NetworkBehaviour.DestroyNetworked(_lastSpawned);
                 _lastSpawned = null;
             }
 

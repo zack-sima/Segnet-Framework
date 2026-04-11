@@ -79,6 +79,47 @@ namespace SegNet {
         public bool IsOwner =>
             OwnerPlayer != null && OwnerPlayer.IsLocal;
 
+        // ---- Networked object operations ----
+
+        /// <summary>
+        /// Spawn a registered network prefab through the active NetworkManager.
+        /// Server/host only.
+        /// </summary>
+        public static NetworkBehaviour InstantiateNetworked(GameObject prefab, Vector3 position, Quaternion rotation,
+            NetworkPlayer owner = null) {
+            var manager = NetworkManager.Instance;
+            if (manager == null) {
+                Debug.LogError("[NetworkBehaviour] InstantiateNetworked failed: NetworkManager not found.");
+                return null;
+            }
+
+            if (!manager.IsServer) {
+                Debug.LogError("[NetworkBehaviour] InstantiateNetworked can only be called on server or host.");
+                return null;
+            }
+
+            return manager.ServerSpawn(prefab, position, rotation, owner);
+        }
+
+        /// <summary>
+        /// Despawn a runtime network object through the active NetworkManager.
+        /// Server/host only.
+        /// </summary>
+        public static void DestroyNetworked(NetworkBehaviour obj) {
+            var manager = NetworkManager.Instance;
+            if (manager == null) {
+                Debug.LogError("[NetworkBehaviour] DestroyNetworked failed: NetworkManager not found.");
+                return;
+            }
+
+            if (!manager.IsServer) {
+                Debug.LogError("[NetworkBehaviour] DestroyNetworked can only be called on server or host.");
+                return;
+            }
+
+            manager.ServerDespawn(obj);
+        }
+
         // ---- Dirty tracking ----
 
         private bool _dirty;

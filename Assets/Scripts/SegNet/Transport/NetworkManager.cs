@@ -27,6 +27,34 @@ namespace SegNet {
 
         protected bool IsTransitioning => _isTransitioning;
 
+        public NetworkState State =>
+            ServerManager.Instance != null ? ServerManager.Instance.State : NetworkState.Offline;
+
+        public bool IsServer =>
+            ServerManager.Instance != null && ServerManager.Instance.IsServer;
+
+        public bool IsClient =>
+            ServerManager.Instance != null && ServerManager.Instance.IsClient;
+
+        public bool IsHost =>
+            ServerManager.Instance != null && ServerManager.Instance.IsHost;
+
+        public bool IsOnline =>
+            ServerManager.Instance != null && ServerManager.Instance.IsOnline;
+
+        public bool IsOffline => State == NetworkState.Offline;
+        public bool IsStarting => State == NetworkState.Starting;
+
+        public bool ConnectionActive {
+            get {
+                var sm = ServerManager.Instance;
+                if (sm == null) return false;
+                if (sm.IsHost) return true;
+                if (sm.State == NetworkState.Server) return sm.Connections.Count > 0;
+                return sm.State == NetworkState.Client && sm.ServerConnection != ConnectionId.Invalid;
+            }
+        }
+
         public IReadOnlyDictionary<uint, NetworkBehaviour> NetworkedObjects =>
             ServerManager.Instance != null
                 ? ServerManager.Instance.NetworkedObjects

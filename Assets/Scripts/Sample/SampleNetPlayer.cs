@@ -3,7 +3,7 @@ using UnityEngine;
 
 public class SampleNetPlayer : NetworkBehaviour {
 
-    [SyncVar] private string testString;
+    [SyncVar(hook = nameof(OnTestStringChanged))] private string testString;
     [SyncVar(hook = nameof(OnPositionChanged))] private Vector3 position;
 
     [Rpc(RpcDirection.LocalClientToServer)]
@@ -12,13 +12,22 @@ public class SampleNetPlayer : NetworkBehaviour {
         testString = $"Position updated to {newPosition} at {Time.time}";
         position = newPosition;
     }
+    [Rpc(RpcDirection.LocalClientToServer)]
+    public void RpcSendMessage(string message) {
+        testString = message;
+    }
+
+    public void OnTestStringChanged(string _, string newStr) {
+        // Debug.Log($"Test string changed to {newStr}");
+        SampleGameUI.Instance.testTextDisplay.text = $"Position: {position}" +
+            $"\nTest String: {newStr}" + $"\nPlayer ID: {OwnerPlayer.PlayerId}";
+    }
 
     private void OnPositionChanged(Vector3 _, Vector3 newPosition) {
-        if (IsLocalPlayer) return; // local player already has the latest position
         transform.position = newPosition;
         // Debug.Log($"Position changed to {position}");
         SampleGameUI.Instance.testTextDisplay.text = $"Position: {position}" +
-            $"\nTest String: {testString}";
+            $"\nTest String: {testString}" + $"\nPlayer ID: {OwnerPlayer.PlayerId}";
     }
 
     void Update() {
@@ -31,19 +40,18 @@ public class SampleNetPlayer : NetworkBehaviour {
 
         if (Input.GetKey(KeyCode.UpArrow)) {
             transform.position += Vector3.forward * Time.deltaTime;
-            // RpcSyncPosition(transform.position);
         }
         if (Input.GetKey(KeyCode.DownArrow)) {
             transform.position += Vector3.back * Time.deltaTime;
-            // RpcSyncPosition(transform.position);
         }
         if (Input.GetKey(KeyCode.LeftArrow)) {
             transform.position += Vector3.left * Time.deltaTime;
-            // RpcSyncPosition(transform.position);
         }
         if (Input.GetKey(KeyCode.RightArrow)) {
             transform.position += Vector3.right * Time.deltaTime;
-            // RpcSyncPosition(transform.position);
+        }
+        if (Input.GetKeyDown(KeyCode.Space)) {
+            RpcSendMessage($"Hello from player {OwnerPlayer.PlayerId} at {Time.time}");
         }
     }
 }
