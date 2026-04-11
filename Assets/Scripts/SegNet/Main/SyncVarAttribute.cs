@@ -26,8 +26,12 @@ namespace SegNet {
     public class SyncVarAttribute : Attribute {
 
         /// <summary>
-        /// Optional name of a method to call on the client when the value changes.
-        /// Signature: void MethodName(T oldValue, T newValue)
+        /// Optional name of a method to call when the value changes. Fires on every peer
+        /// that observes the change — server (and host) from the setter, remote clients
+        /// from OnDeserialize. Accepts either signature:
+        ///   - void MethodName(T oldValue, T newValue)
+        ///   - void MethodName()
+        /// If both forms are present on the same class, the (old, new) form wins.
         /// </summary>
         public string hook;
     }

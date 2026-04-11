@@ -12,6 +12,15 @@ namespace SegNet {
     /// Toggle which axes to sync via the inspector bools.
     /// </summary>
     public class NetworkTransform : NetworkBehaviour {
+        private enum SyncDirection {
+            LocalClientToServer = 0,
+            ServerToClients = 1,
+        }
+
+        private const ushort SyncTransformRpcId = 0x4E54; // "NT"
+
+        [Header("Direction")]
+        [SerializeField] private SyncDirection syncDirection = SyncDirection.ServerToClients;
 
         [Header("Sync Toggles")]
         [SerializeField] private bool syncPosition = true;
@@ -23,44 +32,93 @@ namespace SegNet {
         private Quaternion _lastRotation;
         private Vector3 _lastScale;
 
+        [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
+        private static void RegisterRpcHandler() {
+            RpcRegistry.Register(SyncTransformRpcId, DispatchSyncTransformRpc);
+        }
+
         public override void OnNetworkSpawn() {
             SnapshotCurrent();
         }
 
         private void LateUpdate() {
-            if (!IsSpawned) return;
+            if (!IsSpawned)
+                return;
 
-            if (IsServer) {
-                DetectChanges();
+            if (syncDirection == SyncDirection.ServerToClients) {
+                if (IsServer)
+                    DetectChanges(sendToServer: false);
+            } else if (IsOwner) {
+                DetectChanges(sendToServer: true);
             }
         }
 
-        // ---- Server: change detection ----
+        // ---- Change detection ----
 
-        private void DetectChanges() {
-            bool dirty = false;
+        private void DetectChanges(bool sendToServer) {
+            bool changed = false;
 
             if (syncPosition && transform.position != _lastPosition) {
                 _lastPosition = transform.position;
-                dirty = true;
+                changed = true;
             }
             if (syncRotation && transform.rotation != _lastRotation) {
                 _lastRotation = transform.rotation;
-                dirty = true;
+                changed = true;
             }
             if (syncScale && transform.localScale != _lastScale) {
                 _lastScale = transform.localScale;
-                dirty = true;
+                changed = true;
             }
 
-            if (dirty)
+            if (!changed)
+                return;
+
+            if (sendToServer)
+                SendTransformToServer();
+            else
                 SetDirty();
+        }
+
+        // ---- Client -> server path ----
+
+        private void SendTransformToServer() {
+            var writer = new NetworkWriter();
+            WriteTransformPayload(writer);
+
+            if (IsHost) {
+                ApplyTransformPayload(new NetworkReader(writer.ToArraySegment()), markDirty: true);
+                return;
+            }
+
+            SendRpcInternal(
+                SyncTransformRpcId,
+                RpcDirection.LocalClientToServer,
+                ChannelType.Reliable,
+                writer);
+        }
+
+        private static void DispatchSyncTransformRpc(NetworkBehaviour target, NetworkReader reader) {
+            var networkTransform = target as NetworkTransform;
+            if (networkTransform == null) {
+                Debug.LogWarning("[NetworkTransform] RPC target is not a NetworkTransform.");
+                return;
+            }
+
+            networkTransform.ApplyTransformPayload(reader, markDirty: true);
         }
 
         // ---- Serialization ----
 
         public override void OnSerialize(NetworkWriter writer, bool initialState) {
-            // Write which channels are active so the reader knows what to expect
+            WriteTransformPayload(writer);
+        }
+
+        public override void OnDeserialize(NetworkReader reader, bool initialState) {
+            ApplyTransformPayload(reader, markDirty: false);
+        }
+
+        private void WriteTransformPayload(NetworkWriter writer) {
             byte mask = 0;
             if (syncPosition) mask |= 0x01;
             if (syncRotation) mask |= 0x02;
@@ -75,24 +133,27 @@ namespace SegNet {
                 writer.WriteVector3(transform.localScale);
         }
 
-        public override void OnDeserialize(NetworkReader reader, bool initialState) {
+        private void ApplyTransformPayload(NetworkReader reader, bool markDirty) {
             byte mask = reader.ReadByte();
 
             if ((mask & 0x01) != 0) {
-                Vector3 pos = reader.ReadVector3();
-                transform.position = pos;
-                _lastPosition = pos;
+                Vector3 position = reader.ReadVector3();
+                transform.position = position;
+                _lastPosition = position;
             }
             if ((mask & 0x02) != 0) {
-                Quaternion rot = reader.ReadQuaternion();
-                transform.rotation = rot;
-                _lastRotation = rot;
+                Quaternion rotation = reader.ReadQuaternion();
+                transform.rotation = rotation;
+                _lastRotation = rotation;
             }
             if ((mask & 0x04) != 0) {
                 Vector3 scale = reader.ReadVector3();
                 transform.localScale = scale;
                 _lastScale = scale;
             }
+
+            if (markDirty)
+                SetDirty();
         }
 
         // ---- Helpers ----

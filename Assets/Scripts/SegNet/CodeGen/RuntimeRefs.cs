@@ -47,6 +47,7 @@ namespace SegNet.CodeGen {
         public MethodReference IsServerGetter { get; }
         public MethodReference OwnerPlayerGetter { get; }       // NetworkBehaviour.OwnerPlayer
         public MethodReference NetworkPlayerIsLocalGetter { get; } // NetworkPlayer.IsLocal
+        public MethodReference SetDirtyMethod { get; }          // NetworkBehaviour.SetDirty()
 
         public MethodReference RpcRegistryRegister { get; }     // RpcRegistry.Register(ushort, Action<NetworkBehaviour, NetworkReader>)
 
@@ -141,6 +142,10 @@ namespace SegNet.CodeGen {
             IsServerGetter = module.ImportReference(GetPropertyGetterOrThrow(nbDef, "IsServer"));
             OwnerPlayerGetter = module.ImportReference(GetPropertyGetterOrThrow(nbDef, "OwnerPlayer"));
             NetworkPlayerIsLocalGetter = module.ImportReference(GetPropertyGetterOrThrow(npDef, "IsLocal"));
+
+            var setDirtyDef = FindMethod(nbDef, "SetDirty")
+                ?? throw new InvalidOperationException("NetworkBehaviour.SetDirty() not found");
+            SetDirtyMethod = module.ImportReference(setDirtyDef);
 
             // ---- Action`2 (open) — built by hand against the target's corlib scope ----
             // We deliberately do NOT call module.ImportReference(typeof(Action<,>)) here:

@@ -6,6 +6,8 @@ using Mono.Cecil.Cil;
 using Unity.CompilationPipeline.Common.Diagnostics;
 using Unity.CompilationPipeline.Common.ILPostProcessing;
 
+// Mono.Cecil.Cil pulled in for PortablePdb{Reader,Writer}Provider used in symbol I/O.
+
 namespace SegNet.CodeGen {
 
     /// <summary>
@@ -17,7 +19,14 @@ namespace SegNet.CodeGen {
     ///     wrapper, plus a generated impl method (the original body) and a static dispatch
     ///     handler. Each type with RPCs also gets a [RuntimeInitializeOnLoadMethod]
     ///     registration method that wires the dispatch handlers into RpcRegistry at startup.
-    ///   - SyncVar weaving: TODO (next milestone).
+    ///   - SyncVar weaving: every [SyncVar] field gets a generated dirty-tracking setter,
+    ///     all stfld instructions to that field outside of constructors are rewritten to
+    ///     call the setter, and the type gets generated OnSerialize/OnDeserialize overrides
+    ///     that handle initial-state and delta replication for the [SyncVar] fields.
+    ///
+    /// Types are processed base-to-derived so that SyncVarWeaver's generated OnSerialize
+    /// override on a derived class can find (and emit a non-virtual base call to) the
+    /// override the weaver just generated on its parent class.
     ///
     /// On any validation error, an Error diagnostic is reported and that specific method/
     /// field is left untouched. The rest of the assembly is still woven.
@@ -25,7 +34,6 @@ namespace SegNet.CodeGen {
     public class SegNetILPostProcessor : ILPostProcessor {
 
         private const string RuntimeAssemblyName = "SegNet.Runtime";
-        private const string SyncVarAttrName = "SegNet.SyncVarAttribute";
         private const string RpcAttrName = "SegNet.RpcAttribute";
         private const string NetworkBehaviourName = "SegNet.NetworkBehaviour";
 
@@ -101,40 +109,78 @@ namespace SegNet.CodeGen {
                 var refs = new RuntimeRefs(module);
                 var serializers = new SerializerMap(module);
                 var rpcWeaver = new RpcWeaver(refs, serializers, diagnostics);
+                var syncVarWeaver = new SyncVarWeaver(refs, serializers, diagnostics);
 
+                // Collect all NetworkBehaviour subclasses, then sort base-to-derived.
+                // SyncVarWeaver's generated OnSerialize/OnDeserialize emit non-virtual
+                // base calls that resolve via Cecil.Resolve() at weave time, so a parent
+                // class must already have its woven override in place when we process
+                // a derived class. Sorting by inheritance depth guarantees this for any
+                // types in the same module.
+                var networkBehaviours = new List<TypeDefinition>();
                 foreach (var type in GetAllTypes(module)) {
-                    if (!DerivesFromNetworkBehaviour(type))
-                        continue;
+                    if (DerivesFromNetworkBehaviour(type))
+                        networkBehaviours.Add(type);
+                }
+                networkBehaviours.Sort((a, b) =>
+                    InheritanceDepth(a).CompareTo(InheritanceDepth(b)));
 
-                    rpcWeaver.BeginType();
+                foreach (var type in networkBehaviours) {
                     bool typeChanged = false;
+
+                    // ---- RPC weaving ----
+                    rpcWeaver.BeginType();
 
                     // Snapshot the method list — WeaveRpc adds new methods (impl + dispatch).
                     var methodSnapshot = type.Methods.ToList();
                     foreach (var method in methodSnapshot) {
                         if (!HasAttribute(method, RpcAttrName))
                             continue;
-
                         if (rpcWeaver.WeaveRpc(type, method))
                             typeChanged = true;
                     }
 
                     if (typeChanged) {
                         rpcWeaver.EmitRegistrationMethod(type);
-                        changed = true;
                     }
 
-                    // [SyncVar] fields — milestone 4, scan-only for now.
-                    foreach (var field in type.Fields) {
-                        if (!HasAttribute(field, SyncVarAttrName))
-                            continue;
-                        Info(diagnostics,
-                            $"[SegNet ILPP] [SyncVar] (not yet woven) {type.FullName}.{field.Name}");
-                    }
+                    // ---- SyncVar weaving ----
+                    // Runs after RPC weaving so the stfld-rewrite pass also processes
+                    // any [Rpc] impl methods that were just cloned out (the original
+                    // user code might assign to a [SyncVar] inside an RPC body).
+                    if (syncVarWeaver.WeaveType(type))
+                        typeChanged = true;
+
+                    if (typeChanged)
+                        changed = true;
                 }
             }
 
             return changed;
+        }
+
+        /// <summary>
+        /// Walk a type's BaseType chain counting hops. NetworkBehaviour itself returns
+        /// 0, direct subclasses 1, and so on. Used purely for inheritance-order sort.
+        /// Returns int.MaxValue on resolve failure so unresolvable types sink to the
+        /// bottom (they'll likely fail elsewhere too).
+        /// </summary>
+        private static int InheritanceDepth(TypeDefinition type) {
+            int depth = 0;
+            TypeReference current = type.BaseType;
+            while (current != null) {
+                if (current.FullName == NetworkBehaviourName)
+                    return depth;
+                try {
+                    var def = current.Resolve();
+                    if (def == null) return int.MaxValue;
+                    current = def.BaseType;
+                } catch {
+                    return int.MaxValue;
+                }
+                depth++;
+            }
+            return int.MaxValue;
         }
 
         // ----------------------------------------------------------------
@@ -225,15 +271,5 @@ namespace SegNet.CodeGen {
             }
         }
 
-        // ----------------------------------------------------------------
-        //  Diagnostic helpers
-        // ----------------------------------------------------------------
-
-        private static void Info(List<DiagnosticMessage> diags, string message) {
-            diags.Add(new DiagnosticMessage {
-                DiagnosticType = DiagnosticType.Warning, // Warning so it shows in Console
-                MessageData = message
-            });
-        }
     }
 }
