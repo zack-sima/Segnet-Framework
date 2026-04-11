@@ -9,6 +9,9 @@ public class SampleNetworkManager : NetworkManager {
 
     [Header("Test")]
     [SerializeField] private string testMessage = "hello, network";
+    [SerializeField] private NetworkConnectionManager connectionManager;
+    [SerializeField] private ITransport localTransport, steamTransport;
+    [SerializeField] private bool useSteamTransport;
 
     [Tooltip("Assign a prefab from the PrefabRegistry to test runtime spawning.")]
     [SerializeField] private GameObject testSpawnPrefab;
@@ -18,6 +21,12 @@ public class SampleNetworkManager : NetworkManager {
     private NetworkBehaviour _lastSpawned;
 
     protected override void Start() {
+        if (useSteamTransport) {
+            //TODO: swap with transport
+        } else {
+
+        }
+
         base.Start();
 
         if (ServerManager.Instance == null) {

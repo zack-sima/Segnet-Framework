@@ -34,6 +34,7 @@ namespace SegNet.CodeGen {
         public TypeReference NetworkPlayerType { get; }
         public TypeReference NetworkWriterType { get; }
         public TypeReference NetworkReaderType { get; }
+        public TypeReference SyncCollectionType { get; }
         public TypeReference RpcDirectionType { get; }
         public TypeReference ChannelTypeType { get; }
 
@@ -49,6 +50,15 @@ namespace SegNet.CodeGen {
         public MethodReference NetworkPlayerIsLocalGetter { get; } // NetworkPlayer.IsLocal
         public MethodReference SetDirtyMethod { get; }          // NetworkBehaviour.SetDirty()
 
+        public MethodReference SyncCollectionInitialize { get; }      // SyncCollection.__SegNetInitialize(NetworkBehaviour, int, Action)
+        public MethodReference SyncCollectionIsDirtyGetter { get; }   // SyncCollection.__SegNetIsDirty
+        public MethodReference SyncCollectionMarkFullDirty { get; }   // SyncCollection.__SegNetMarkFullDirty()
+        public MethodReference SyncCollectionClearDirty { get; }      // SyncCollection.__SegNetClearDirty()
+        public MethodReference SyncCollectionSerializeFull { get; }   // SyncCollection.__SegNetSerializeFull(NetworkWriter)
+        public MethodReference SyncCollectionSerializeDelta { get; }  // SyncCollection.__SegNetSerializeDelta(NetworkWriter)
+        public MethodReference SyncCollectionDeserializeFull { get; } // SyncCollection.__SegNetDeserializeFull(NetworkReader)
+        public MethodReference SyncCollectionDeserializeDelta { get; } // SyncCollection.__SegNetDeserializeDelta(NetworkReader)
+
         public MethodReference RpcRegistryRegister { get; }     // RpcRegistry.Register(ushort, Action<NetworkBehaviour, NetworkReader>)
 
         // ---- mscorlib / netstandard ----
@@ -56,7 +66,9 @@ namespace SegNet.CodeGen {
         public TypeReference VoidType { get; }
         public TypeReference ObjectType { get; }
         public TypeReference IntPtrType { get; }
+        public TypeReference ActionType { get; }                 // System.Action
         public TypeReference Action2OpenType { get; }           // open generic System.Action`2
+        public MethodReference ActionCtor { get; }               // Action..ctor(object, IntPtr)
 
         // The Action<NetworkBehaviour, NetworkReader> instance + its constructor.
         // Pre-built because every dispatch handler we register uses the same signature.
@@ -104,6 +116,7 @@ namespace SegNet.CodeGen {
             NetworkPlayerType = module.ImportReference(typeof(NetworkPlayer));
             NetworkWriterType = module.ImportReference(typeof(NetworkWriter));
             NetworkReaderType = module.ImportReference(typeof(NetworkReader));
+            SyncCollectionType = module.ImportReference(typeof(SyncCollection));
             RpcDirectionType = module.ImportReference(typeof(RpcDirection));
             ChannelTypeType = module.ImportReference(typeof(ChannelType));
 
@@ -115,6 +128,7 @@ namespace SegNet.CodeGen {
             var nbDef = ResolveOrThrow(NetworkBehaviourType, "SegNet.NetworkBehaviour");
             var npDef = ResolveOrThrow(NetworkPlayerType, "SegNet.NetworkPlayer");
             var writerDef = ResolveOrThrow(NetworkWriterType, "SegNet.NetworkWriter");
+            var syncCollectionDef = ResolveOrThrow(SyncCollectionType, "SegNet.SyncCollection");
 
             // ---- NetworkWriter constructors ----
             var writerCtor0 = FindMethod(writerDef, ".ctor")
@@ -147,11 +161,51 @@ namespace SegNet.CodeGen {
                 ?? throw new InvalidOperationException("NetworkBehaviour.SetDirty() not found");
             SetDirtyMethod = module.ImportReference(setDirtyDef);
 
+            var syncInitDef = FindMethod(syncCollectionDef, "__SegNetInitialize",
+                "SegNet.NetworkBehaviour", "System.Int32", "System.Action")
+                ?? throw new InvalidOperationException(
+                    "SyncCollection.__SegNetInitialize(NetworkBehaviour, int, Action) not found");
+            SyncCollectionInitialize = module.ImportReference(syncInitDef);
+
+            SyncCollectionIsDirtyGetter =
+                module.ImportReference(GetPropertyGetterOrThrow(syncCollectionDef, "__SegNetIsDirty"));
+
+            SyncCollectionMarkFullDirty = module.ImportReference(
+                FindMethod(syncCollectionDef, "__SegNetMarkFullDirty")
+                ?? throw new InvalidOperationException("SyncCollection.__SegNetMarkFullDirty() not found"));
+            SyncCollectionClearDirty = module.ImportReference(
+                FindMethod(syncCollectionDef, "__SegNetClearDirty")
+                ?? throw new InvalidOperationException("SyncCollection.__SegNetClearDirty() not found"));
+            SyncCollectionSerializeFull = module.ImportReference(
+                FindMethod(syncCollectionDef, "__SegNetSerializeFull", "SegNet.NetworkWriter")
+                ?? throw new InvalidOperationException("SyncCollection.__SegNetSerializeFull(NetworkWriter) not found"));
+            SyncCollectionSerializeDelta = module.ImportReference(
+                FindMethod(syncCollectionDef, "__SegNetSerializeDelta", "SegNet.NetworkWriter")
+                ?? throw new InvalidOperationException("SyncCollection.__SegNetSerializeDelta(NetworkWriter) not found"));
+            SyncCollectionDeserializeFull = module.ImportReference(
+                FindMethod(syncCollectionDef, "__SegNetDeserializeFull", "SegNet.NetworkReader")
+                ?? throw new InvalidOperationException("SyncCollection.__SegNetDeserializeFull(NetworkReader) not found"));
+            SyncCollectionDeserializeDelta = module.ImportReference(
+                FindMethod(syncCollectionDef, "__SegNetDeserializeDelta", "SegNet.NetworkReader")
+                ?? throw new InvalidOperationException("SyncCollection.__SegNetDeserializeDelta(NetworkReader) not found"));
+
             // ---- Action`2 (open) — built by hand against the target's corlib scope ----
             // We deliberately do NOT call module.ImportReference(typeof(Action<,>)) here:
             // Cecil would tag the resulting TypeReference with the host runtime's corlib
             // (System.Private.CoreLib), and downstream ILPPs would fail to resolve it
             // because the target assembly never references that DLL.
+            ActionType = new TypeReference(
+                "System", "Action", module, corlibScope, valueType: false);
+
+            var action0Ctor = new MethodReference(".ctor", VoidType, ActionType) {
+                HasThis = true,
+                ExplicitThis = false,
+                CallingConvention = MethodCallingConvention.Default,
+            };
+            action0Ctor.Parameters.Add(new ParameterDefinition(ObjectType));
+            action0Ctor.Parameters.Add(new ParameterDefinition(IntPtrType));
+            ActionCtor = action0Ctor;
+
             var action2Ref = new TypeReference(
                 "System", "Action`2", module, corlibScope, valueType: false);
             action2Ref.GenericParameters.Add(new GenericParameter("T1", action2Ref));
