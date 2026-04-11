@@ -18,7 +18,7 @@ namespace SegNet {
 
     /// <summary>
     /// Singleton entry point for the SegNet framework.
-    /// Manages network lifecycle, player records, object spawning, and state replication.
+    /// Manages network lifecycle, player records, object registries, and state replication.
     /// </summary>
     public class ServerManager : MonoBehaviour {
         public static ServerManager Instance { get; private set; }
@@ -79,7 +79,7 @@ namespace SegNet {
         private readonly HashSet<ConnectionId> _lateJoinTargets = new HashSet<ConnectionId>();
 
         /// <summary>All networked objects (runtime + scene) keyed by NetworkId.</summary>
-        public IReadOnlyDictionary<uint, NetworkBehaviour> NetworkedObjects => _networkedObjects;
+        internal IReadOnlyDictionary<uint, NetworkBehaviour> NetworkedObjects => _networkedObjects;
 
         // ---- Framework callbacks ----
 
@@ -87,8 +87,8 @@ namespace SegNet {
         public event Action<ConnectionId, DisconnectReason> OnClientDisconnected;
         public event Action<NetworkPlayer> OnPlayerJoined;
         public event Action<NetworkPlayer> OnPlayerLeft;
-        public event Action<NetworkBehaviour> OnObjectSpawned;
-        public event Action<NetworkBehaviour> OnObjectDespawned;
+        internal event Action<NetworkBehaviour> OnObjectSpawned;
+        internal event Action<NetworkBehaviour> OnObjectDespawned;
         public event Action OnStarted;
         public event Action OnStopped;
 
@@ -232,25 +232,25 @@ namespace SegNet {
         }
 
         // ==================================================================
-        //  Public API: spawn / despawn (server only)
+        //  Runtime object operations (NetworkManager-facing)
         // ==================================================================
 
         /// <summary>
-        /// Spawn a network object from a registered prefab. Server only.
+        /// Runtime spawn operation used by NetworkManager. Server only.
         /// Returns the root NetworkBehaviour of the spawned object.
         /// </summary>
-        public NetworkBehaviour ServerSpawn(GameObject prefab, Vector3 position, Quaternion rotation,
+        internal NetworkBehaviour SpawnNetworkObject(GameObject prefab, Vector3 position, Quaternion rotation,
             NetworkPlayer owner = null) {
             if (!IsServer) {
-                Debug.LogError("[ServerManager] ServerSpawn can only be called on the server.");
+                Debug.LogError("[ServerManager] SpawnNetworkObject can only be called on the server.");
                 return null;
             }
             if (prefab == null) {
-                Debug.LogError("[ServerManager] ServerSpawn: prefab is null.");
+                Debug.LogError("[ServerManager] SpawnNetworkObject: prefab is null.");
                 return null;
             }
             if (prefabRegistry == null) {
-                Debug.LogError("[ServerManager] ServerSpawn: no PrefabRegistry assigned.");
+                Debug.LogError("[ServerManager] SpawnNetworkObject: no PrefabRegistry assigned.");
                 return null;
             }
 
@@ -263,10 +263,10 @@ namespace SegNet {
             return ServerSpawnInternal(prefab, prefabId, position, rotation, owner);
         }
 
-        /// <summary>Despawn a runtime-spawned network object. Server only.</summary>
-        public void ServerDespawn(NetworkBehaviour obj) {
+        /// <summary>Runtime despawn operation used by NetworkManager. Server only.</summary>
+        internal void DespawnNetworkObject(NetworkBehaviour obj) {
             if (!IsServer) {
-                Debug.LogError("[ServerManager] ServerDespawn can only be called on the server.");
+                Debug.LogError("[ServerManager] DespawnNetworkObject can only be called on the server.");
                 return;
             }
             if (obj == null || !obj.IsSpawned) return;
@@ -280,11 +280,11 @@ namespace SegNet {
         }
 
         // ==================================================================
-        //  Public API: object lookup
+        //  Runtime object lookup
         // ==================================================================
 
         /// <summary>Get a networked object by its runtime NetworkId.</summary>
-        public NetworkBehaviour GetNetworkObject(uint networkId) {
+        internal NetworkBehaviour GetNetworkObject(uint networkId) {
             _networkedObjects.TryGetValue(networkId, out var obj);
             return obj;
         }
@@ -335,7 +335,7 @@ namespace SegNet {
                         player.RemoveOwnedObject(obj);
                     } else {
                         // Runtime objects: despawn
-                        ServerDespawn(obj.Root ?? obj);
+                        DespawnNetworkObject(obj.Root ?? obj);
                     }
                 }
 

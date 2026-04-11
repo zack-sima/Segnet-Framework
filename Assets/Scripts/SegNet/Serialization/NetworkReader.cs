@@ -138,7 +138,7 @@ namespace SegNet {
         // ---- NetworkBehaviour / NetworkPlayer references ----
         //
         // Reads a stable ID off the wire and resolves it to a live instance via
-        // ServerManager. Returns null if the id is the sentinel (0 / -1) or if
+        // NetworkManager/ServerManager. Returns null if the id is the sentinel (0 / -1) or if
         // the target object isn't currently known on this peer (e.g. RPC arrived
         // before the spawn message). Callers may need to handle null.
 
@@ -150,6 +150,8 @@ namespace SegNet {
         public NetworkBehaviour ReadNetworkBehaviour() {
             uint nid = ReadUInt();
             if (nid == 0u) return null;
+            var nm = NetworkManager.Instance;
+            if (nm != null) return nm.GetNetworkObject(nid);
             var sm = ServerManager.Instance;
             if (sm == null) return null;
             return sm.GetNetworkObject(nid);

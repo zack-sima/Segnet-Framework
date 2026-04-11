@@ -22,6 +22,10 @@ public class SampleNetPlayer : NetworkBehaviour {
     }
 
     void Update() {
+        if (IsServer && position != transform.position) {
+            position = transform.position; // server authoritative position sync
+        }
+
         //only local player can do controls!
         if (!IsLocalPlayer) return;
 

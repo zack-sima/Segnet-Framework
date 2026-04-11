@@ -179,7 +179,7 @@ namespace SegNet {
         // ---- NetworkBehaviour / NetworkPlayer references ----
         //
         // Reference types are serialized by stable ID, not value. The reader resolves
-        // the ID back to an instance via ServerManager. Null and unspawned objects
+        // the ID back to an instance via NetworkManager/ServerManager. Null and unspawned objects
         // (or unknown players) round-trip as null.
 
         /// <summary>

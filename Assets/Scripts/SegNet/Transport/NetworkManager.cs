@@ -1,4 +1,6 @@
+using System;
 using System.Collections;
+using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.SceneManagement;
 
@@ -7,15 +9,6 @@ namespace SegNet {
     /// <summary>
     /// Persistent parent controller for the SegNet framework.
     /// Keep this on the root GameObject that also contains the transport/managers hierarchy.
-    ///
-    /// Keys:
-    ///   H = Load game scene (optional) and Start Host
-    ///   C = Load game scene (optional) and Start Client
-    ///   J = Load game scene (optional) and Start Server
-    ///   X = Stop session, optionally load menu scene, then destroy the persistent root
-    ///   T = Spawn test prefab (server)    D = Despawn last spawned (server)
-    ///   M = Move last spawned object (server)
-    ///   S = Broadcast test message        P = Print player/object list
     /// </summary>
     public class NetworkManager : MonoBehaviour {
         public static NetworkManager Instance { get; private set; }
@@ -27,16 +20,17 @@ namespace SegNet {
         [Tooltip("Optional scene to load after exiting the current network session.")]
         [SerializeField] private string menuScene;
 
-        [Header("Test")]
-        [SerializeField] private string testMessage = "hello, network";
-
-        [Tooltip("Assign a prefab from the PrefabRegistry to test runtime spawning.")]
-        [SerializeField] private GameObject testSpawnPrefab;
-
-        private const ushort TestMessageType = (ushort)NetworkMessageType.UserStart;
-
-        private NetworkBehaviour _lastSpawned;
         private bool _isTransitioning;
+
+        public event Action<NetworkBehaviour> OnObjectSpawned;
+        public event Action<NetworkBehaviour> OnObjectDespawned;
+
+        protected bool IsTransitioning => _isTransitioning;
+
+        public IReadOnlyDictionary<uint, NetworkBehaviour> NetworkedObjects =>
+            ServerManager.Instance != null
+                ? ServerManager.Instance.NetworkedObjects
+                : null;
 
         private void Awake() {
             if (Instance != null && Instance != this) {
@@ -54,7 +48,7 @@ namespace SegNet {
             DontDestroyOnLoad(transform.root.gameObject);
         }
 
-        private void Start() {
+        protected virtual void Start() {
             if (Instance == this)
                 IsReplacingPersistentRoot = false;
 
@@ -64,16 +58,12 @@ namespace SegNet {
                 return;
             }
 
-            sm.Messages.RegisterHandler(TestMessageType, OnTestMessageReceived);
-
             sm.OnPlayerJoined += p =>
                 Debug.Log($"[NetworkManager] === PLAYER JOINED: {p}  isLocal={p.IsLocal}  isHost={p.IsHost} ===");
             sm.OnPlayerLeft += p =>
                 Debug.Log($"[NetworkManager] === PLAYER LEFT: {p} ===");
-            sm.OnObjectSpawned += o =>
-                Debug.Log($"[NetworkManager] === SPAWNED: {o} ===");
-            sm.OnObjectDespawned += o =>
-                Debug.Log($"[NetworkManager] === DESPAWNED: {o} ===");
+            sm.OnObjectSpawned += HandleObjectSpawned;
+            sm.OnObjectDespawned += HandleObjectDespawned;
             sm.OnClientDisconnected += HandleClientDisconnected;
             sm.OnStarted += () =>
                 Debug.Log($"[NetworkManager] === NETWORK STARTED ({sm.State}) ===");
@@ -81,80 +71,15 @@ namespace SegNet {
                 Debug.Log("[NetworkManager] === NETWORK STOPPED ===");
         }
 
-        private void OnDestroy() {
+        protected virtual void OnDestroy() {
             if (Instance == this)
                 Instance = null;
 
             if (ServerManager.Instance != null) {
-                if (ServerManager.Instance.Messages != null)
-                    ServerManager.Instance.Messages.UnregisterHandler(TestMessageType);
-
+                ServerManager.Instance.OnObjectSpawned -= HandleObjectSpawned;
+                ServerManager.Instance.OnObjectDespawned -= HandleObjectDespawned;
                 ServerManager.Instance.OnClientDisconnected -= HandleClientDisconnected;
             }
-        }
-
-        private void Update() {
-            var sm = ServerManager.Instance;
-            if (sm == null) return;
-
-            if (!sm.IsOnline) {
-                if (_isTransitioning) return;
-
-                if (Input.GetKeyDown(KeyCode.H)) StartHost();
-                if (Input.GetKeyDown(KeyCode.C)) StartClient();
-                if (Input.GetKeyDown(KeyCode.J)) StartServer();
-                return;
-            }
-
-            if (Input.GetKeyDown(KeyCode.X)) {
-                StopGame();
-                return;
-            }
-
-            if (sm.IsServer) {
-                if (Input.GetKeyDown(KeyCode.T) && testSpawnPrefab != null) {
-                    Vector3 pos = new Vector3(
-                        Random.Range(-3f, 3f), 0f, Random.Range(-3f, 3f));
-                    _lastSpawned = sm.ServerSpawn(testSpawnPrefab, pos, Quaternion.identity);
-                    Debug.Log($"[NetworkManager] Spawned: {_lastSpawned}");
-                }
-
-                if (Input.GetKeyDown(KeyCode.D) && _lastSpawned != null) {
-                    sm.ServerDespawn(_lastSpawned);
-                    _lastSpawned = null;
-                }
-
-                if (Input.GetKeyDown(KeyCode.M) && _lastSpawned != null) {
-                    _lastSpawned.transform.position += new Vector3(1f, 0f, 0f);
-                    Debug.Log($"[NetworkManager] Moved {_lastSpawned.name} to {_lastSpawned.transform.position}");
-                }
-            }
-
-            if (Input.GetKeyDown(KeyCode.S)) {
-                var writer = new NetworkWriter();
-                writer.WriteString(testMessage);
-                sm.Messages.Broadcast(TestMessageType, writer);
-                Debug.Log($"[NetworkManager] Sent test message: \"{testMessage}\"");
-            }
-
-            if (Input.GetKeyDown(KeyCode.P)) {
-                Debug.Log($"--- Players ({sm.Players.Count}) ---");
-                foreach (var kvp in sm.Players)
-                    Debug.Log($"  {kvp.Value}  local={kvp.Value.IsLocal}  host={kvp.Value.IsHost}");
-                Debug.Log($"  LocalPlayer: {sm.LocalPlayer}");
-
-                Debug.Log($"--- Objects ({sm.NetworkedObjects.Count}) ---");
-                foreach (var kvp in sm.NetworkedObjects) {
-                    var r = kvp.Value;
-                    int childCount = r.AllBehaviours != null ? r.AllBehaviours.Length : 1;
-                    Debug.Log($"  {r}  behaviours={childCount}  pos={r.transform.position}");
-                }
-            }
-        }
-
-        private void OnTestMessageReceived(ConnectionId from, NetworkReader reader) {
-            string msg = reader.ReadString();
-            Debug.Log($"[NetworkManager] Test message from {from}: \"{msg}\"");
         }
 
         private void HandleClientDisconnected(ConnectionId connectionId, DisconnectReason reason) {
@@ -164,6 +89,16 @@ namespace SegNet {
 
             Debug.LogWarning($"[NetworkManager] Lost host connection ({reason}). Returning to menu.");
             StopGame();
+        }
+
+        private void HandleObjectSpawned(NetworkBehaviour obj) {
+            Debug.Log($"[NetworkManager] === SPAWNED: {obj} ===");
+            OnObjectSpawned?.Invoke(obj);
+        }
+
+        private void HandleObjectDespawned(NetworkBehaviour obj) {
+            Debug.Log($"[NetworkManager] === DESPAWNED: {obj} ===");
+            OnObjectDespawned?.Invoke(obj);
         }
 
         private IEnumerator BeginSession(NetworkState targetState) {
@@ -229,5 +164,31 @@ namespace SegNet {
         public void StartClient() => StartCoroutine(BeginSession(NetworkState.Client));
         public void StartServer() => StartCoroutine(BeginSession(NetworkState.Server));
         public void StopGame() => StartCoroutine(ExitSession());
+
+        public NetworkBehaviour ServerSpawn(GameObject prefab, Vector3 position, Quaternion rotation,
+            NetworkPlayer owner = null) {
+            var sm = ServerManager.Instance;
+            if (sm == null) {
+                Debug.LogError("[NetworkManager] ServerSpawn failed: ServerManager not found.");
+                return null;
+            }
+
+            return sm.SpawnNetworkObject(prefab, position, rotation, owner);
+        }
+
+        public void ServerDespawn(NetworkBehaviour obj) {
+            var sm = ServerManager.Instance;
+            if (sm == null) {
+                Debug.LogError("[NetworkManager] ServerDespawn failed: ServerManager not found.");
+                return;
+            }
+
+            sm.DespawnNetworkObject(obj);
+        }
+
+        public NetworkBehaviour GetNetworkObject(uint networkId) {
+            var sm = ServerManager.Instance;
+            return sm != null ? sm.GetNetworkObject(networkId) : null;
+        }
     }
 }
