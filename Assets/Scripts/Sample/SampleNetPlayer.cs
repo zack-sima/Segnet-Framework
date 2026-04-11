@@ -5,7 +5,7 @@ public class SampleNetPlayer : NetworkBehaviour {
 
     [SyncVar(hook = nameof(OnTestStringChanged))] private string testString;
     [SyncVar(hook = nameof(OnPositionChanged))] private Vector3 position;
-    [SyncVar, Capacity(10)] private SyncList<string> recentMessages;
+    [SyncVar(hook = nameof(OnListChanged)), Capacity(10)] private SyncList<string> recentMessages;
 
     [Rpc(RpcDirection.LocalClientToServer)]
     public void RpcSyncPosition(Vector3 newPosition) {
@@ -23,12 +23,14 @@ public class SampleNetPlayer : NetworkBehaviour {
             recentMessages.RemoveAt(0);
     }
 
-    public void OnTestStringChanged(string _, string newStr) {
-        // Debug.Log($"Test string changed to {newStr}");
+    public void OnTestStringChanged() {
+        OnListChanged();
+    }
+    public void OnListChanged() {
+        // Debug.Log($"Recent messages list changed: {changeEvent}");
         SampleGameUI.Instance.testTextDisplay.text = $"Position: {position}" +
-            $"\nTest String: {newStr}" + $"\nPlayer ID: {OwnerPlayer.PlayerId}";
+            $"\nTest String: {testString}" + $"\nPlayer ID: {OwnerPlayer.PlayerId}";
 
-        //add all recent messages to display
         if (recentMessages.Count > 0) {
             SampleGameUI.Instance.testTextDisplay.text += "\nRecent Messages:";
             foreach (var msg in recentMessages)
