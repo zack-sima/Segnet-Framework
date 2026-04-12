@@ -1,4 +1,4 @@
-SegNet Framework:
+# SegNet Framework:
 
 Some notes:
 - Syntax is based on Mirror/Photon
