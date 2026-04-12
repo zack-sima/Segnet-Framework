@@ -1,5 +1,37 @@
 # SegNet Framework:
 
+## Installation
+
+1. Install Steamworks:
+Window > Package Manager > + > Add package from git URL
+https://github.com/rlabrecque/Steamworks.NET.git?path=/com.rlabrecque.steamworks.net#2025.162.1
+
+2. Install SegNet
+Window > Package Manager > + > Add package from git URL
+https://github.com/zack-sima/Segnet-Framework.git?path=/Assets/Scripts/SegNet#v0.1.0
+
+## Setup
+
+1. Create an empty GameObject named NetworkManager.
+2. Add the NetworkManager component from SegNet.
+3. Create a prefab registry with Create > SegNet > Prefab Registry.
+4. Add your networked prefabs to the registry.
+5. Assign the registry to the NetworkManager.
+6. Set Game Scene, Menu Scene, Use Steam Transport, Steam Room Number, Local Address, and Local Port as needed.
+
+In scripts, write using SegNet; to reference classes.
+
+To have a real running game with NetworkBehaviours, you will likely want to inherit the NetworkManager with your custom class to set up player controls. See full repo sample scripts.
+
+Start sessions with:
+
+NetworkManager.Instance.StartHost();
+NetworkManager.Instance.StartClient();
+NetworkManager.Instance.StartServer();
+NetworkManager.Instance.StopGame();
+
+## More
+
 Some notes:
 - Syntax is based on Mirror/Photon
 
