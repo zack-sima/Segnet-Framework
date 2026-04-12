@@ -5,8 +5,8 @@ using UnityEngine;
 namespace SegNet {
 
     public class NetworkConnectionManager : MonoBehaviour {
-        [SerializeField] private MonoBehaviour transportBehaviour; // assign SteamTransport in inspector
-        [SerializeField] private int clientTimeoutMs = 10000;
+        private MonoBehaviour transportBehaviour;
+        private int clientTimeoutMs = 10000;
 
         private ITransport _transport;
         private readonly HashSet<ConnectionId> _connections = new HashSet<ConnectionId>();
@@ -59,6 +59,10 @@ namespace SegNet {
             _lastReceiveTime = Time.realtimeSinceStartup;
             TrackBytesIn(payload.Count);
             OnData?.Invoke(from, payload, channel);
+        }
+
+        public void Configure(int timeoutMs) {
+            clientTimeoutMs = timeoutMs;
         }
 
         public bool SetTransport(MonoBehaviour transport) {

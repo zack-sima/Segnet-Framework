@@ -7,14 +7,14 @@ using UnityEngine;
 namespace SegNet {
 
     /// <summary>
-    /// Localhost TCP transport for testing without Steam.
+    /// Direct TCP transport for testing without Steam.
     /// Both reliable and unreliable channels go over TCP (this is a test transport).
     ///
     /// Wire format per message: [4 bytes LE length][payload bytes].
     /// </summary>
     public class LocalTransport : MonoBehaviour, ITransport {
-        [SerializeField] private int port = 8000;
-        [SerializeField] private string host = "127.0.0.1";
+        private int port = 8000;
+        private string host = "127.0.0.1";
 
         public NetRole Role { get; private set; } = NetRole.None;
         public bool IsRunning { get; private set; }
@@ -44,6 +44,11 @@ namespace SegNet {
         private string _clientConnectError;
 
         // ---- ITransport ----
+
+        public void Configure(string hostAddress, int portNumber) {
+            host = string.IsNullOrWhiteSpace(hostAddress) ? "127.0.0.1" : hostAddress;
+            port = portNumber > 0 ? portNumber : 8000;
+        }
 
         public void Initialize() {
             Role = NetRole.None;

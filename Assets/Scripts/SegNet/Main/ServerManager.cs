@@ -23,12 +23,9 @@ namespace SegNet {
     public class ServerManager : MonoBehaviour {
         public static ServerManager Instance { get; private set; }
 
-        [Header("Transport")]
-        [SerializeField] private NetworkConnectionManager connectionManager;
-        [SerializeField] private NetworkStreamManager streamManager;
-
-        [Header("Spawning")]
-        [SerializeField] private PrefabRegistry prefabRegistry;
+        private NetworkConnectionManager connectionManager;
+        private NetworkStreamManager streamManager;
+        private PrefabRegistry prefabRegistry;
 
         // ---- State ----
 
@@ -115,6 +112,13 @@ namespace SegNet {
 
             connectionManager.OnClientConnected += HandleClientConnected;
             connectionManager.OnClientDisconnected += HandleClientDisconnected;
+        }
+
+        public void Configure(NetworkConnectionManager connection, NetworkStreamManager stream,
+            PrefabRegistry registry) {
+            connectionManager = connection;
+            streamManager = stream;
+            prefabRegistry = registry;
         }
 
         private void OnDestroy() {

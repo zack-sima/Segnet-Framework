@@ -9,7 +9,7 @@ namespace SegNet {
     /// the same prefabs in the same order.
     ///
     /// Create via: Right-click → Create → SegNet → Prefab Registry.
-    /// Assign to ServerManager in the inspector.
+    /// Assign to NetworkManager in the inspector.
     /// </summary>
     [CreateAssetMenu(fileName = "PrefabRegistry", menuName = "SegNet/Prefab Registry")]
     public class PrefabRegistry : ScriptableObject {

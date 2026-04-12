@@ -1,7 +1,8 @@
 //NOTE: not publishing to non-Steamworks compatible platforms (only OSX, Windows, Linux)
 // https://github.com/rlabrecque/Steamworks.NET.git?path=/com.rlabrecque.steamworks.net#2025.162.1
 
-// NOTE: requires SteamManager prefab in scene and Steamworks.NET installed.
+// NOTE: standalone Steam stress tester; if used without NetworkManager,
+// it still requires a SteamManager in scene and Steamworks.NET installed.
 // AppID should be 480 (Spacewar) for testing.
 
 using UnityEngine;

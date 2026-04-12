@@ -15,7 +15,7 @@ namespace SegNet {
     /// Fragmented messages use prefix 0x01 followed by stream metadata.
     /// </summary>
     public class NetworkStreamManager : MonoBehaviour {
-        [SerializeField] private NetworkConnectionManager connectionManager;
+        private NetworkConnectionManager connectionManager;
 
         private const byte PrefixWhole = 0x00;
         private const byte PrefixFragment = 0x01;
@@ -43,17 +43,40 @@ namespace SegNet {
 
         // ---- Unity lifecycle ----
 
+        public void Configure(NetworkConnectionManager manager) {
+            if (connectionManager == manager)
+                return;
+
+            Unsubscribe();
+            connectionManager = manager;
+            if (isActiveAndEnabled)
+                Subscribe();
+        }
+
         private void Awake() {
             if (connectionManager == null) {
                 Debug.LogError("[NetworkStreamManager] No NetworkConnectionManager assigned.");
                 enabled = false;
                 return;
             }
+            Subscribe();
+        }
+
+        private void OnDestroy() {
+            Unsubscribe();
+        }
+
+        private void Subscribe() {
+            if (connectionManager == null)
+                return;
+
+            connectionManager.OnData -= HandleTransportData;
+            connectionManager.OnClientDisconnected -= HandleDisconnect;
             connectionManager.OnData += HandleTransportData;
             connectionManager.OnClientDisconnected += HandleDisconnect;
         }
 
-        private void OnDestroy() {
+        private void Unsubscribe() {
             if (connectionManager != null) {
                 connectionManager.OnData -= HandleTransportData;
                 connectionManager.OnClientDisconnected -= HandleDisconnect;

@@ -8,8 +8,10 @@ namespace SegNet {
 
     /// <summary>
     /// Persistent parent controller for the SegNet framework.
-    /// Keep this on the root GameObject that also contains the transport/managers hierarchy.
+    /// Add this one component to a GameObject; it creates and configures the SegNet
+    /// runtime managers/transports underneath itself.
     /// </summary>
+    [DefaultExecutionOrder(-900)]
     public class NetworkManager : MonoBehaviour {
         public static NetworkManager Instance { get; private set; }
         internal static bool IsReplacingPersistentRoot { get; private set; }
@@ -21,13 +23,34 @@ namespace SegNet {
         [SerializeField] private string menuScene;
 
         [Header("Transport")]
-        [SerializeField] private NetworkConnectionManager connectionManager;
+        [Tooltip("Use Steam transport instead of direct TCP local/network address transport.")]
+        [SerializeField] private bool useSteamTransport;
+        [SerializeField] private int clientTimeoutMs = 10000;
+
+        [Header("Local Transport")]
+        [Tooltip("Address clients connect to when using local/direct TCP transport.")]
+        [SerializeField] private string localAddress = "127.0.0.1";
+        [Tooltip("TCP port used for hosting and joining when using local/direct TCP transport.")]
+        [SerializeField] private int localPort = 8000;
+
+        [Header("Spawning")]
+        [SerializeField] private PrefabRegistry prefabRegistry;
 
         [Header("Traffic")]
         [SerializeField] private float kbIn;
         [SerializeField] private float kbOut;
 
+        private SteamManager steamManager;
+        private LocalTransport localTransport;
+        private SteamTransport steamTransport;
+        private NetworkSceneManager sceneManager;
+        private NetworkConnectionManager connectionManager;
+        private NetworkStreamManager streamManager;
+        private ServerManager serverManager;
+
+        private NetworkTransportMode transportMode = NetworkTransportMode.Local;
         private bool _isTransitioning;
+        private bool _runtimeReady;
         private long _lastStatBytesIn;
         private long _lastStatBytesOut;
         private float _lastStatTime;
@@ -54,6 +77,9 @@ namespace SegNet {
 
         public bool IsOffline => State == NetworkState.Offline;
         public bool IsStarting => State == NetworkState.Starting;
+        public bool UseSteamTransport => useSteamTransport;
+        public string LocalAddress => localAddress;
+        public int LocalPort => localPort;
         public float KbIn => kbIn;
         public float KbOut => kbOut;
 
@@ -86,7 +112,7 @@ namespace SegNet {
 
             Instance = this;
             DontDestroyOnLoad(transform.root.gameObject);
-            ResolveConnectionManager();
+            EnsureRuntimeComponents();
             ResetBandwidthStats();
         }
 
@@ -126,6 +152,14 @@ namespace SegNet {
 
         protected virtual void LateUpdate() {
             UpdateBandwidthStats();
+        }
+
+        private void OnValidate() {
+            transportMode = useSteamTransport ? NetworkTransportMode.Steam : NetworkTransportMode.Local;
+            if (string.IsNullOrWhiteSpace(localAddress))
+                localAddress = "127.0.0.1";
+            if (localPort <= 0)
+                localPort = 8000;
         }
 
         private void HandleClientDisconnected(ConnectionId connectionId, DisconnectReason reason) {
@@ -220,7 +254,8 @@ namespace SegNet {
         public void StopGame() => StartCoroutine(ExitSession());
 
         public bool SetTransport(MonoBehaviour transportBehaviour) {
-            if (!ResolveConnectionManager())
+            EnsureRuntimeComponents();
+            if (connectionManager == null)
                 return false;
             if (!IsOffline) {
                 Debug.LogWarning("[NetworkManager] Cannot swap transport while network session is active.");
@@ -234,7 +269,8 @@ namespace SegNet {
         }
 
         public bool SetTransport(ITransport transport) {
-            if (!ResolveConnectionManager())
+            EnsureRuntimeComponents();
+            if (connectionManager == null)
                 return false;
             if (!IsOffline) {
                 Debug.LogWarning("[NetworkManager] Cannot swap transport while network session is active.");
@@ -245,6 +281,45 @@ namespace SegNet {
             if (swapped)
                 ResetBandwidthStats();
             return swapped;
+        }
+
+        public bool SetTransportMode(NetworkTransportMode mode) {
+            EnsureRuntimeComponents();
+
+            if (!IsOffline) {
+                Debug.LogWarning("[NetworkManager] Cannot swap transport while network session is active.");
+                return false;
+            }
+
+            transportMode = mode;
+            useSteamTransport = mode == NetworkTransportMode.Steam;
+
+            switch (transportMode) {
+                case NetworkTransportMode.Local:
+                    return SetTransport((ITransport)localTransport);
+                case NetworkTransportMode.Steam:
+                    return SetTransport((ITransport)steamTransport);
+                default:
+                    Debug.LogError($"[NetworkManager] Unknown transport mode {transportMode}.");
+                    return false;
+            }
+        }
+
+        public bool SetUseSteamTransport(bool useSteam) {
+            return SetTransportMode(useSteam ? NetworkTransportMode.Steam : NetworkTransportMode.Local);
+        }
+
+        public void SetLocalTransportEndpoint(string address, int port) {
+            if (!IsOffline) {
+                Debug.LogWarning("[NetworkManager] Cannot change local transport endpoint while network session is active.");
+                return;
+            }
+
+            localAddress = string.IsNullOrWhiteSpace(address) ? "127.0.0.1" : address;
+            localPort = port > 0 ? port : 8000;
+
+            EnsureRuntimeComponents();
+            localTransport.Configure(localAddress, localPort);
         }
 
         public NetworkBehaviour ServerSpawn(GameObject prefab, Vector3 position, Quaternion rotation,
@@ -273,7 +348,64 @@ namespace SegNet {
             return sm != null ? sm.GetNetworkObject(networkId) : null;
         }
 
+        private void EnsureRuntimeComponents() {
+            if (_runtimeReady)
+                return;
+
+            transportMode = useSteamTransport ? NetworkTransportMode.Steam : NetworkTransportMode.Local;
+
+            steamManager = GetOrCreateRuntimeComponent<SteamManager>("SteamManager");
+            ActivateRuntimeComponent(steamManager);
+
+            localTransport = GetOrCreateRuntimeComponent<LocalTransport>("LocalTransport");
+            localTransport.Configure(localAddress, localPort);
+            ActivateRuntimeComponent(localTransport);
+
+            steamTransport = GetOrCreateRuntimeComponent<SteamTransport>("SteamTransport");
+            ActivateRuntimeComponent(steamTransport);
+
+            connectionManager = GetOrCreateRuntimeComponent<NetworkConnectionManager>(
+                "NetworkConnectionManager");
+            connectionManager.Configure(clientTimeoutMs);
+            connectionManager.SetTransport(transportMode == NetworkTransportMode.Steam
+                ? (ITransport)steamTransport
+                : localTransport);
+            ActivateRuntimeComponent(connectionManager);
+
+            streamManager = GetOrCreateRuntimeComponent<NetworkStreamManager>(
+                "NetworkStreamManager");
+            streamManager.Configure(connectionManager);
+            ActivateRuntimeComponent(streamManager);
+
+            sceneManager = GetOrCreateRuntimeComponent<NetworkSceneManager>(
+                "NetworkSceneManager");
+            ActivateRuntimeComponent(sceneManager);
+
+            serverManager = GetOrCreateRuntimeComponent<ServerManager>("ServerManager");
+            serverManager.Configure(connectionManager, streamManager, prefabRegistry);
+            ActivateRuntimeComponent(serverManager);
+
+            _runtimeReady = true;
+        }
+
+        private static void ActivateRuntimeComponent(Component component) {
+            if (component != null && !component.gameObject.activeSelf)
+                component.gameObject.SetActive(true);
+        }
+
+        private T GetOrCreateRuntimeComponent<T>(string objectName) where T : Component {
+            T existing = GetComponentInChildren<T>(true);
+            if (existing != null)
+                return existing;
+
+            var go = new GameObject(objectName);
+            go.SetActive(false);
+            go.transform.SetParent(transform, worldPositionStays: false);
+            return go.AddComponent<T>();
+        }
+
         private bool ResolveConnectionManager() {
+            EnsureRuntimeComponents();
             if (connectionManager != null)
                 return true;
 

@@ -1,4 +1,5 @@
-// NOTE: requires SteamManager prefab in scene and Steamworks.NET installed.
+// NOTE: requires SteamManager and Steamworks.NET installed.
+// NetworkManager creates the SteamManager automatically for normal framework use.
 // AppID should be 480 (Spacewar) for testing.
 
 using System;

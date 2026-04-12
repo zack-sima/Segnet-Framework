@@ -12,6 +12,11 @@ namespace SegNet {
         Unreliable = 1
     }
 
+    public enum NetworkTransportMode {
+        Local = 0,
+        Steam = 1
+    }
+
     public enum DisconnectReason {
         Unknown = 0,
         LocalShutdown = 1,

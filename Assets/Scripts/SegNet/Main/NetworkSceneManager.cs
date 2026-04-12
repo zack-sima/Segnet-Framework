@@ -4,13 +4,13 @@ using UnityEngine;
 namespace SegNet {
 
     /// <summary>
-    /// Per-scene singleton that collects scene-placed NetworkBehaviours.
-    /// Destroyed on scene reload.
+    /// Runtime singleton that collects scene-placed NetworkBehaviours for the active scene.
+    /// Created by NetworkManager and cleared before loading a new network scene or menu.
     ///
     /// Scene objects self-register via NetworkBehaviour.Awake(). If this manager
     /// awakens after some behaviours, it drains their pending registrations.
     ///
-    /// Place one of these in every scene that contains networked scene objects.
+    /// End users normally do not add this manually; NetworkManager creates it.
     /// </summary>
     public class NetworkSceneManager : MonoBehaviour {
 
