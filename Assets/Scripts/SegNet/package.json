@@ -1,9 +1,12 @@
 {
-  "name": "com.yourname.segnet",
+  "name": "com.zacksima.segnet",
   "version": "0.1.0",
   "displayName": "SegNet",
   "description": "Server-authoritative Unity networking framework.",
   "unity": "2022.3",
+  "author": {
+    "name": "Zack Sima"
+  },
   "dependencies": {
     "com.unity.nuget.mono-cecil": "1.11.6"
   }
