@@ -27,6 +27,10 @@ namespace SegNet {
         [SerializeField] private bool useSteamTransport;
         [SerializeField] private int clientTimeoutMs = 10000;
 
+        [Header("Steam Transport")]
+        [Tooltip("Steam lobby room key used when hosting or joining through Steam.")]
+        [SerializeField] private string steamRoomNumber = "TEST_ROOM_42069";
+
         [Header("Local Transport")]
         [Tooltip("Address clients connect to when using local/direct TCP transport.")]
         [SerializeField] private string localAddress = "127.0.0.1";
@@ -78,6 +82,7 @@ namespace SegNet {
         public bool IsOffline => State == NetworkState.Offline;
         public bool IsStarting => State == NetworkState.Starting;
         public bool UseSteamTransport => useSteamTransport;
+        public string SteamRoomNumber => steamRoomNumber;
         public string LocalAddress => localAddress;
         public int LocalPort => localPort;
         public float KbIn => kbIn;
@@ -156,6 +161,8 @@ namespace SegNet {
 
         private void OnValidate() {
             transportMode = useSteamTransport ? NetworkTransportMode.Steam : NetworkTransportMode.Local;
+            if (string.IsNullOrWhiteSpace(steamRoomNumber))
+                steamRoomNumber = "TEST_ROOM_42069";
             if (string.IsNullOrWhiteSpace(localAddress))
                 localAddress = "127.0.0.1";
             if (localPort <= 0)
@@ -309,6 +316,18 @@ namespace SegNet {
             return SetTransportMode(useSteam ? NetworkTransportMode.Steam : NetworkTransportMode.Local);
         }
 
+        public void SetSteamRoomNumber(string roomNumber) {
+            if (!IsOffline) {
+                Debug.LogWarning("[NetworkManager] Cannot change Steam room number while network session is active.");
+                return;
+            }
+
+            steamRoomNumber = string.IsNullOrWhiteSpace(roomNumber) ? "TEST_ROOM_42069" : roomNumber;
+
+            EnsureRuntimeComponents();
+            steamTransport.ConfigureRoom(steamRoomNumber);
+        }
+
         public void SetLocalTransportEndpoint(string address, int port) {
             if (!IsOffline) {
                 Debug.LogWarning("[NetworkManager] Cannot change local transport endpoint while network session is active.");
@@ -362,6 +381,7 @@ namespace SegNet {
             ActivateRuntimeComponent(localTransport);
 
             steamTransport = GetOrCreateRuntimeComponent<SteamTransport>("SteamTransport");
+            steamTransport.ConfigureRoom(steamRoomNumber);
             ActivateRuntimeComponent(steamTransport);
 
             connectionManager = GetOrCreateRuntimeComponent<NetworkConnectionManager>(

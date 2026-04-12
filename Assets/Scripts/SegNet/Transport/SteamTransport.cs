@@ -11,8 +11,8 @@ using Steamworks;
 namespace SegNet {
 
     public class SteamTransport : MonoBehaviour, ITransport {
-        // Hard-coded test room for simple host/join
-        private const string ROOM_NAME = "TEST_ROOM_42069";
+        private const string DefaultRoomName = "TEST_ROOM_42069";
+        private string roomName = DefaultRoomName;
 
         // Lobby / connection callbacks
         private Callback<LobbyCreated_t> _lobbyCreated;
@@ -38,6 +38,10 @@ namespace SegNet {
         public event Action<ConnectionId> OnConnected;
         public event Action<ConnectionId, DisconnectReason> OnDisconnected;
         public event Action<ConnectionId, ArraySegment<byte>, ChannelType> OnData;
+
+        public void ConfigureRoom(string roomNumber) {
+            roomName = string.IsNullOrWhiteSpace(roomNumber) ? DefaultRoomName : roomNumber;
+        }
 
         public void Initialize() {
             if (_initialized)
@@ -101,7 +105,7 @@ namespace SegNet {
             IsRunning = true;
 
             SteamMatchmaking.AddRequestLobbyListStringFilter(
-                "room", ROOM_NAME, ELobbyComparison.k_ELobbyComparisonEqual);
+                "room", roomName, ELobbyComparison.k_ELobbyComparisonEqual);
             SteamMatchmaking.RequestLobbyList();
         }
 
@@ -180,7 +184,7 @@ namespace SegNet {
             _lobbyId = new CSteamID(cb.m_ulSteamIDLobby);
             Debug.Log("[SteamTransport] Lobby created: " + _lobbyId);
 
-            SteamMatchmaking.SetLobbyData(_lobbyId, "room", ROOM_NAME);
+            SteamMatchmaking.SetLobbyData(_lobbyId, "room", roomName);
             SteamMatchmaking.SetLobbyJoinable(_lobbyId, true);
 
             _listenSocket = SteamNetworkingSockets.CreateListenSocketP2P(0, 0, null);
