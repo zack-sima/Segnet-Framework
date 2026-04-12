@@ -1,6 +1,6 @@
 {
-  "name": "com.zacksima.segnet",
-  "version": "0.1.0",
+  "name": "com.segmentgames.segnet",
+  "version": "0.1.2",
   "displayName": "SegNet",
   "description": "Server-authoritative Unity networking framework.",
   "unity": "2022.3",
