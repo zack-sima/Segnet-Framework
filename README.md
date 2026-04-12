@@ -8,7 +8,7 @@ https://github.com/rlabrecque/Steamworks.NET.git?path=/com.rlabrecque.steamworks
 
 2. Install SegNet
 Window > Package Manager > + > Add package from git URL
-https://github.com/zack-sima/Segnet-Framework.git?path=/Assets/Scripts/SegNet#v0.1.1
+https://github.com/zack-sima/Segnet-Framework.git?path=/Assets/Scripts/SegNet#v0.1.2
 
 ## Setup
 
