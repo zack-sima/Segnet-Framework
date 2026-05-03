@@ -20,6 +20,7 @@ namespace SegNet {
         StateDelta = 4,
         FullSnapshot = 5,
         Heartbeat = 6,
+        UnreliableStateUpdate = 7,
 
         // RPC
         RPC = 10,

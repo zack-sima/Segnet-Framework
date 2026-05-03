@@ -1,7 +1,7 @@
 using SegNet;
 using UnityEngine;
 
-public class SampleNetworkManager : NetworkManager {
+public class NetworkManager : BaseNetworkManager {
     [Header("Sample Player")]
     [SerializeField] private GameObject samplePlayerPrefab;
     [SerializeField] private Vector3 spawnOrigin = Vector3.zero;
@@ -21,7 +21,7 @@ public class SampleNetworkManager : NetworkManager {
         base.Start();
 
         if (ServerManager.Instance == null) {
-            Debug.LogError("[SampleNetworkManager] ServerManager not found in scene.");
+            Debug.LogError("[NetworkManager] ServerManager not found in scene.");
             return;
         }
 
@@ -65,7 +65,7 @@ public class SampleNetworkManager : NetworkManager {
                 Vector3 pos = new Vector3(
                     Random.Range(-3f, 3f), 0f, Random.Range(-3f, 3f));
                 _lastSpawned = NetworkBehaviour.InstantiateNetworked(testSpawnPrefab, pos, Quaternion.identity);
-                Debug.Log($"[SampleNetworkManager] Spawned: {_lastSpawned}");
+                Debug.Log($"[NetworkManager] Spawned: {_lastSpawned}");
             }
 
             if (Input.GetKeyDown(KeyCode.D) && _lastSpawned != null) {
@@ -76,7 +76,7 @@ public class SampleNetworkManager : NetworkManager {
             if (Input.GetKeyDown(KeyCode.M) && _lastSpawned != null) {
                 _lastSpawned.transform.position += new Vector3(1f, 0f, 0f);
                 Debug.Log(
-                    $"[SampleNetworkManager] Moved {_lastSpawned.name} to {_lastSpawned.transform.position}");
+                    $"[NetworkManager] Moved {_lastSpawned.name} to {_lastSpawned.transform.position}");
             }
         }
 
@@ -84,7 +84,7 @@ public class SampleNetworkManager : NetworkManager {
             var writer = new NetworkWriter();
             writer.WriteString(testMessage);
             sm.Messages.Broadcast(TestMessageType, writer);
-            Debug.Log($"[SampleNetworkManager] Sent test message: \"{testMessage}\"");
+            Debug.Log($"[NetworkManager] Sent test message: \"{testMessage}\"");
         }
 
         if (Input.GetKeyDown(KeyCode.P)) {
@@ -111,7 +111,7 @@ public class SampleNetworkManager : NetworkManager {
             return;
 
         if (samplePlayerPrefab == null) {
-            Debug.LogWarning("[SampleNetworkManager] Sample player prefab is not assigned.");
+            Debug.LogWarning("[NetworkManager] Sample player prefab is not assigned.");
             return;
         }
 
@@ -135,12 +135,12 @@ public class SampleNetworkManager : NetworkManager {
             return;
 
         Debug.LogWarning(
-            $"[SampleNetworkManager] Host disconnected ({reason}). Returning to menu.");
+            $"[NetworkManager] Host disconnected ({reason}). Returning to menu.");
         StopGame();
     }
 
     private void OnTestMessageReceived(ConnectionId from, NetworkReader reader) {
         string msg = reader.ReadString();
-        Debug.Log($"[SampleNetworkManager] Test message from {from}: \"{msg}\"");
+        Debug.Log($"[NetworkManager] Test message from {from}: \"{msg}\"");
     }
 }

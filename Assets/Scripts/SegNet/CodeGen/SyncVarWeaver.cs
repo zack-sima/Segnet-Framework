@@ -45,11 +45,14 @@ namespace SegNet.CodeGen {
     internal sealed class SyncVarWeaver {
 
         private const string SyncVarAttrName = "SegNet.SyncVarAttribute";
+        private const string UnreliableSyncVarAttrName = "SegNet.UnreliableSyncVarAttribute";
         private const string CapacityAttrName = "SegNet.CapacityAttribute";
         private const string DirtyMaskFieldName = "__segnetSyncVarDirty";
+        private const string UnreliableDirtyMaskFieldName = "__segnetUnreliableSyncVarDirty";
         private const string SetterPrefix = "__segnetSetSyncVar_";
         private const string EnsureCollectionPrefix = "__segnetEnsureSyncCollection_";
         private const string CollectionChangedPrefix = "__segnetOnSyncCollectionChanged_";
+        private const string NextBroadcastFieldPrefix = "__segnetUnreliableNextBroadcast_";
 
         private const string SyncArrayFullName = "SegNet.SyncArray`1";
         private const string SyncListFullName = "SegNet.SyncList`1";
@@ -99,7 +102,11 @@ namespace SegNet.CodeGen {
             public MethodReference HookMethod;  // null if no hook
             public MethodDefinition Setter;     // populated after generation
             public bool IsCollection;
+            public bool IsUnreliable;
+            public int DirtyBitIndex = -1;
+            public float MinBroadcastSeconds;
             public int CollectionCapacity;
+            public FieldDefinition NextBroadcastField;
             public MethodDefinition EnsureCollectionMethod;
             public MethodDefinition CollectionChangedMethod;
         }
@@ -114,10 +121,11 @@ namespace SegNet.CodeGen {
         /// (already reported via diagnostics).
         /// </summary>
         public bool WeaveType(TypeDefinition type) {
-            // Quick scan: any [SyncVar] fields at all?
+            // Quick scan: any [SyncVar] or [UnreliableSyncVar] fields at all?
             List<FieldDefinition> rawFields = null;
             foreach (var f in type.Fields) {
-                if (f.HasAttributeOfType(SyncVarAttrName)) {
+                if (f.HasAttributeOfType(SyncVarAttrName) ||
+                    f.HasAttributeOfType(UnreliableSyncVarAttrName)) {
                     if (rawFields == null) rawFields = new List<FieldDefinition>();
                     rawFields.Add(f);
                 }
@@ -127,30 +135,44 @@ namespace SegNet.CodeGen {
             // Re-entry guard: if our generated dirty-mask field already exists, the
             // weaver has run on this assembly before. Refuse to double-weave.
             foreach (var f in type.Fields) {
-                if (f.Name == DirtyMaskFieldName) {
-                    Error($"[SyncVar] '{type.FullName}': field '{DirtyMaskFieldName}' already exists. " +
+                if (f.Name == DirtyMaskFieldName || f.Name == UnreliableDirtyMaskFieldName) {
+                    Error($"[SyncVar] '{type.FullName}': generated field '{f.Name}' already exists. " +
                           "Did the weaver already run on this assembly?");
                     return false;
                 }
             }
 
-            if (rawFields.Count > MaxSyncVarsPerClass) {
-                Error($"[SyncVar] '{type.FullName}': too many SyncVars ({rawFields.Count}). " +
-                      $"Max is {MaxSyncVarsPerClass} per class.");
-                return false;
-            }
-
             // Disallow user-declared OnSerialize/OnDeserialize on classes with SyncVars —
             // the weaver owns those overrides on this class. (User can still override on
             // a parent that has no SyncVars.)
-            if (HasUserOverride(type, "OnSerialize", "SegNet.NetworkWriter")) {
+            if (HasUserOverride(type, "OnSerialize", _refs.VoidType.FullName,
+                _refs.NetworkWriterType.FullName, "System.Boolean")) {
                 Error($"[SyncVar] '{type.FullName}': cannot declare a manual OnSerialize override " +
-                      "on a class that has [SyncVar] fields — the weaver generates this method.");
+                      "on a class that has replicated fields — the weaver generates this method.");
                 return false;
             }
-            if (HasUserOverride(type, "OnDeserialize", "SegNet.NetworkReader")) {
+            if (HasUserOverride(type, "OnDeserialize", _refs.VoidType.FullName,
+                _refs.NetworkReaderType.FullName, "System.Boolean")) {
                 Error($"[SyncVar] '{type.FullName}': cannot declare a manual OnDeserialize override " +
-                      "on a class that has [SyncVar] fields — the weaver generates this method.");
+                      "on a class that has replicated fields — the weaver generates this method.");
+                return false;
+            }
+            if (HasUserOverride(type, "ShouldSerializeUnreliable", "System.Boolean",
+                "System.Single")) {
+                Error($"[SyncVar] '{type.FullName}': cannot declare a manual ShouldSerializeUnreliable override " +
+                      "on a class that has [UnreliableSyncVar] fields — the weaver generates this method.");
+                return false;
+            }
+            if (HasUserOverride(type, "OnSerializeUnreliable", _refs.VoidType.FullName,
+                _refs.NetworkWriterType.FullName, "System.Single")) {
+                Error($"[SyncVar] '{type.FullName}': cannot declare a manual OnSerializeUnreliable override " +
+                      "on a class that has [UnreliableSyncVar] fields — the weaver generates this method.");
+                return false;
+            }
+            if (HasUserOverride(type, "OnDeserializeUnreliable", _refs.VoidType.FullName,
+                _refs.NetworkReaderType.FullName)) {
+                Error($"[SyncVar] '{type.FullName}': cannot declare a manual OnDeserializeUnreliable override " +
+                      "on a class that has [UnreliableSyncVar] fields — the weaver generates this method.");
                 return false;
             }
 
@@ -162,6 +184,26 @@ namespace SegNet.CodeGen {
                 slots.Add(slot);
             }
 
+            var reliableSlots = new List<SyncVarSlot>();
+            var unreliableSlots = new List<SyncVarSlot>();
+            foreach (var slot in slots) {
+                if (slot.IsUnreliable)
+                    unreliableSlots.Add(slot);
+                else
+                    reliableSlots.Add(slot);
+            }
+
+            if (reliableSlots.Count > MaxSyncVarsPerClass) {
+                Error($"[SyncVar] '{type.FullName}': too many reliable SyncVars ({reliableSlots.Count}). " +
+                      $"Max is {MaxSyncVarsPerClass} per class.");
+                return false;
+            }
+            if (unreliableSlots.Count > MaxSyncVarsPerClass) {
+                Error($"[UnreliableSyncVar] '{type.FullName}': too many unreliable SyncVars ({unreliableSlots.Count}). " +
+                      $"Max is {MaxSyncVarsPerClass} per class.");
+                return false;
+            }
+
             // Snapshot the current methods BEFORE we add anything. Step 4 (stfld
             // rewrite) walks this snapshot, so it never sees the generated setters or
             // the generated OnSerialize/OnDeserialize.
@@ -169,8 +211,21 @@ namespace SegNet.CodeGen {
             foreach (var m in type.Methods)
                 methodsToRewrite.Add(m);
 
-            // Step 2: per-class dirty mask field.
-            var dirtyMaskField = GenerateDirtyMaskField(type);
+            FieldDefinition dirtyMaskField = reliableSlots.Count > 0
+                ? GenerateDirtyMaskField(type, DirtyMaskFieldName)
+                : null;
+            FieldDefinition unreliableDirtyMaskField = unreliableSlots.Count > 0
+                ? GenerateDirtyMaskField(type, UnreliableDirtyMaskFieldName)
+                : null;
+
+            for (int i = 0; i < reliableSlots.Count; i++)
+                reliableSlots[i].DirtyBitIndex = i;
+            for (int i = 0; i < unreliableSlots.Count; i++)
+                unreliableSlots[i].DirtyBitIndex = i;
+            foreach (var slot in unreliableSlots) {
+                if (slot.MinBroadcastSeconds > 0f)
+                    slot.NextBroadcastField = GenerateNextBroadcastField(type, slot.Field);
+            }
 
             // Sync collections are reference objects that must exist before user code
             // touches them. Generate per-field ensure/bind helpers before setters.
@@ -181,9 +236,9 @@ namespace SegNet.CodeGen {
             }
 
             // Step 3: per-field setters.
-            for (int i = 0; i < slots.Count; i++) {
-                slots[i].Setter = GenerateSetter(type, slots[i], dirtyMaskField, i);
-            }
+            foreach (var slot in slots)
+                slot.Setter = GenerateSetter(type, slot,
+                    slot.IsUnreliable ? unreliableDirtyMaskField : dirtyMaskField);
 
             InjectCollectionEnsuresIntoMethods(methodsToRewrite, slots);
 
@@ -197,10 +252,15 @@ namespace SegNet.CodeGen {
                 totalRewrites += RewriteFieldStores(m, fieldNameToSetter);
 
             // Step 5: OnSerialize / OnDeserialize overrides.
-            GenerateOnSerialize(type, slots, dirtyMaskField);
-            GenerateOnDeserialize(type, slots);
+            GenerateOnSerialize(type, slots, reliableSlots, dirtyMaskField, unreliableDirtyMaskField);
+            GenerateOnDeserialize(type, slots, reliableSlots);
+            if (unreliableSlots.Count > 0) {
+                GenerateShouldSerializeUnreliable(type, unreliableSlots, unreliableDirtyMaskField);
+                GenerateOnSerializeUnreliable(type, unreliableSlots, unreliableDirtyMaskField);
+                GenerateOnDeserializeUnreliable(type, unreliableSlots);
+            }
 
-            Info($"[SegNet ILPP] Wove {slots.Count} [SyncVar] field(s) on {type.FullName} " +
+            Info($"[SegNet ILPP] Wove {reliableSlots.Count} reliable + {unreliableSlots.Count} unreliable field(s) on {type.FullName} " +
                  $"({totalRewrites} stfld rewrite(s))");
             return true;
         }
@@ -210,30 +270,40 @@ namespace SegNet.CodeGen {
         // ----------------------------------------------------------------
 
         private SyncVarSlot ValidateField(TypeDefinition type, FieldDefinition field) {
+            bool isReliable = field.HasAttributeOfType(SyncVarAttrName);
+            bool isUnreliable = field.HasAttributeOfType(UnreliableSyncVarAttrName);
+            if (isReliable == isUnreliable) {
+                Error($"[SyncVar] '{type.FullName}.{field.Name}' must have exactly one of [SyncVar] or [UnreliableSyncVar].");
+                return null;
+            }
+
+            string attrName = isUnreliable ? "[UnreliableSyncVar]" : "[SyncVar]";
+            var attr = field.GetAttributeOfType(isUnreliable ? UnreliableSyncVarAttrName : SyncVarAttrName);
+
             if (field.IsStatic) {
-                Error($"[SyncVar] '{type.FullName}.{field.Name}' must not be static.");
+                Error($"{attrName} '{type.FullName}.{field.Name}' must not be static.");
                 return null;
             }
             if (field.IsLiteral) {
-                Error($"[SyncVar] '{type.FullName}.{field.Name}' must not be const.");
+                Error($"{attrName} '{type.FullName}.{field.Name}' must not be const.");
                 return null;
             }
             if (field.IsInitOnly) {
-                Error($"[SyncVar] '{type.FullName}.{field.Name}' must not be readonly.");
+                Error($"{attrName} '{type.FullName}.{field.Name}' must not be readonly.");
                 return null;
             }
 
             if (TryGetSyncCollectionArguments(field.FieldType, out var elementTypes)) {
                 for (int i = 0; i < elementTypes.Count; i++) {
                     if (!_serializers.TryGet(elementTypes[i], out _, out _)) {
-                        Error($"[SyncVar] '{type.FullName}.{field.Name}': unsupported sync collection " +
+                        Error($"{attrName} '{type.FullName}.{field.Name}': unsupported sync collection " +
                               $"element type '{elementTypes[i].FullName}'. See SerializerMap for supported types.");
                         return null;
                     }
                 }
 
                 if (!TryReadCapacity(field, out int capacity) || capacity <= 0) {
-                    Error($"[SyncVar] '{type.FullName}.{field.Name}': sync collections require " +
+                    Error($"{attrName} '{type.FullName}.{field.Name}': sync collections require " +
                           "[Capacity(n)] with n > 0.");
                     return null;
                 }
@@ -241,14 +311,24 @@ namespace SegNet.CodeGen {
                 var collectionSlot = new SyncVarSlot {
                     Field = field,
                     IsCollection = true,
+                    IsUnreliable = isUnreliable,
                     CollectionCapacity = capacity,
                 };
 
-                string collectionHook = ReadHookName(field.GetAttributeOfType(SyncVarAttrName));
+                if (isUnreliable) {
+                    int minBroadcastMs = ReadIntField(attr, "MinBroadcastMS");
+                    if (minBroadcastMs < 0) {
+                        Error($"[UnreliableSyncVar] '{type.FullName}.{field.Name}': MinBroadcastMS must be >= 0.");
+                        return null;
+                    }
+                    collectionSlot.MinBroadcastSeconds = minBroadcastMs / 1000f;
+                }
+
+                string collectionHook = ReadHookName(attr);
                 if (!string.IsNullOrEmpty(collectionHook)) {
                     collectionSlot.HookMethod = FindHookMethod(type, collectionHook, field.FieldType);
                     if (collectionSlot.HookMethod == null) {
-                        Error($"[SyncVar] '{type.FullName}.{field.Name}': hook '{collectionHook}' not found. " +
+                        Error($"{attrName} '{type.FullName}.{field.Name}': hook '{collectionHook}' not found. " +
                               $"Expected an instance method 'void {collectionHook}({field.FieldType.FullName} oldValue, " +
                               $"{field.FieldType.FullName} newValue)' or 'void {collectionHook}()'.");
                         return null;
@@ -259,7 +339,7 @@ namespace SegNet.CodeGen {
             }
 
             if (!_serializers.TryGet(field.FieldType, out var write, out var read)) {
-                Error($"[SyncVar] '{type.FullName}.{field.Name}': unsupported type " +
+                Error($"{attrName} '{type.FullName}.{field.Name}': unsupported type " +
                       $"'{field.FieldType.FullName}'. See SerializerMap for supported types.");
                 return null;
             }
@@ -269,14 +349,24 @@ namespace SegNet.CodeGen {
                 WriteMethod = write,
                 ReadMethod = read,
                 RequiresReadCast = _serializers.RequiresReadCast(field.FieldType),
+                IsUnreliable = isUnreliable,
             };
 
+            if (isUnreliable) {
+                int minBroadcastMs = ReadIntField(attr, "MinBroadcastMS");
+                if (minBroadcastMs < 0) {
+                    Error($"[UnreliableSyncVar] '{type.FullName}.{field.Name}': MinBroadcastMS must be >= 0.");
+                    return null;
+                }
+                slot.MinBroadcastSeconds = minBroadcastMs / 1000f;
+            }
+
             // Hook resolution.
-            string hookName = ReadHookName(field.GetAttributeOfType(SyncVarAttrName));
+            string hookName = ReadHookName(attr);
             if (!string.IsNullOrEmpty(hookName)) {
                 slot.HookMethod = FindHookMethod(type, hookName, field.FieldType);
                 if (slot.HookMethod == null) {
-                    Error($"[SyncVar] '{type.FullName}.{field.Name}': hook '{hookName}' not found. " +
+                    Error($"{attrName} '{type.FullName}.{field.Name}': hook '{hookName}' not found. " +
                           $"Expected an instance method 'void {hookName}({field.FieldType.FullName} oldValue, " +
                           $"{field.FieldType.FullName} newValue)' or 'void {hookName}()'.");
                     return null;
@@ -295,6 +385,17 @@ namespace SegNet.CodeGen {
                 }
             }
             return null;
+        }
+
+        private static int ReadIntField(CustomAttribute attr, string fieldName) {
+            if (attr == null || !attr.HasFields)
+                return 0;
+
+            foreach (var f in attr.Fields) {
+                if (f.Name == fieldName)
+                    return Convert.ToInt32(f.Argument.Value);
+            }
+            return 0;
         }
 
         private static bool TryReadCapacity(FieldDefinition field, out int capacity) {
@@ -366,19 +467,23 @@ namespace SegNet.CodeGen {
             return null;
         }
 
-        /// <summary>
-        /// True if the user has manually declared an override of (returnType=void)
-        /// <paramref name="name"/>(firstParamFullName, bool) on this exact type. We use
-        /// this to refuse weaving if the user already supplied OnSerialize/OnDeserialize
-        /// since the weaver would clobber their code.
-        /// </summary>
-        private bool HasUserOverride(TypeDefinition type, string name, string firstParamFullName) {
+        private bool HasUserOverride(
+            TypeDefinition type, string name, string returnTypeFullName, params string[] parameterTypeFullNames) {
+
             foreach (var m in type.Methods) {
                 if (m.Name != name) continue;
                 if (m.IsStatic) continue;
-                if (m.Parameters.Count != 2) continue;
-                if (m.Parameters[0].ParameterType.FullName != firstParamFullName) continue;
-                if (m.Parameters[1].ParameterType.FullName != "System.Boolean") continue;
+                if (m.ReturnType.FullName != returnTypeFullName) continue;
+                if (m.Parameters.Count != parameterTypeFullNames.Length) continue;
+
+                bool matches = true;
+                for (int i = 0; i < parameterTypeFullNames.Length; i++) {
+                    if (m.Parameters[i].ParameterType.FullName != parameterTypeFullNames[i]) {
+                        matches = false;
+                        break;
+                    }
+                }
+                if (!matches) continue;
                 return true;
             }
             return false;
@@ -388,11 +493,20 @@ namespace SegNet.CodeGen {
         //  Field + setter generation
         // ----------------------------------------------------------------
 
-        private FieldDefinition GenerateDirtyMaskField(TypeDefinition type) {
+        private FieldDefinition GenerateDirtyMaskField(TypeDefinition type, string fieldName) {
             var field = new FieldDefinition(
-                DirtyMaskFieldName,
+                fieldName,
                 FieldAttributes.Private,
                 _refs.Module.TypeSystem.UInt64);
+            type.Fields.Add(field);
+            return field;
+        }
+
+        private FieldDefinition GenerateNextBroadcastField(TypeDefinition type, FieldDefinition sourceField) {
+            var field = new FieldDefinition(
+                NextBroadcastFieldPrefix + sourceField.Name,
+                FieldAttributes.Private,
+                _refs.Module.TypeSystem.Single);
             type.Fields.Add(field);
             return field;
         }
@@ -503,7 +617,7 @@ namespace SegNet.CodeGen {
         }
 
         private MethodDefinition GenerateSetter(
-            TypeDefinition type, SyncVarSlot slot, FieldDefinition dirtyMaskField, int bitIndex) {
+            TypeDefinition type, SyncVarSlot slot, FieldDefinition dirtyMaskField) {
 
             var setter = new MethodDefinition(
                 SetterPrefix + slot.Field.Name,
@@ -553,17 +667,21 @@ namespace SegNet.CodeGen {
                 il.Emit(OpCodes.Callvirt, _refs.SyncCollectionMarkFullDirty);
             }
 
-            // this.__segnetSyncVarDirty |= (1UL << bitIndex);
-            il.Emit(OpCodes.Ldarg_0);
-            il.Emit(OpCodes.Ldarg_0);
-            il.Emit(OpCodes.Ldfld, dirtyMaskField);
-            il.Emit(OpCodes.Ldc_I8, 1L << bitIndex);
-            il.Emit(OpCodes.Or);
-            il.Emit(OpCodes.Stfld, dirtyMaskField);
+            if (dirtyMaskField != null) {
+                // this.dirtyMask |= (1UL << bitIndex);
+                il.Emit(OpCodes.Ldarg_0);
+                il.Emit(OpCodes.Ldarg_0);
+                il.Emit(OpCodes.Ldfld, dirtyMaskField);
+                il.Emit(OpCodes.Ldc_I8, 1L << slot.DirtyBitIndex);
+                il.Emit(OpCodes.Or);
+                il.Emit(OpCodes.Stfld, dirtyMaskField);
+            }
 
-            // this.SetDirty();
-            il.Emit(OpCodes.Ldarg_0);
-            il.Emit(OpCodes.Call, _refs.SetDirtyMethod);
+            if (!slot.IsUnreliable) {
+                // Reliable SyncVars wake the main dirty flush path immediately.
+                il.Emit(OpCodes.Ldarg_0);
+                il.Emit(OpCodes.Call, _refs.SetDirtyMethod);
+            }
 
             // Hook fires from the setter so the host (and dedicated server) sees the
             // change locally — the receiving-side OnDeserialize is short-circuited on
@@ -599,8 +717,10 @@ namespace SegNet.CodeGen {
             il.Emit(OpCodes.Ldarg_0);
             il.Emit(OpCodes.Ldfld, field);
             il.Emit(OpCodes.Ldarg_1);
+            EmitEqualsForType(il, field.FieldType);
+        }
 
-            var ft = field.FieldType;
+        private void EmitEqualsForType(ILProcessor il, TypeReference ft) {
             string fullName = ft.FullName;
 
             // Enums: underlying type is integer, ceq just works.
@@ -740,7 +860,8 @@ namespace SegNet.CodeGen {
         // ----------------------------------------------------------------
 
         private MethodDefinition GenerateOnSerialize(
-            TypeDefinition type, List<SyncVarSlot> slots, FieldDefinition dirtyMaskField) {
+            TypeDefinition type, List<SyncVarSlot> slots, List<SyncVarSlot> reliableSlots,
+            FieldDefinition dirtyMaskField, FieldDefinition unreliableDirtyMaskField) {
 
             var method = new MethodDefinition(
                 "OnSerialize",
@@ -760,7 +881,7 @@ namespace SegNet.CodeGen {
             //  a previously-woven generated override on a parent class, OR the empty
             //  virtual on NetworkBehaviour. Either way, the chain replicates inherited
             //  SyncVars before our own.
-            var baseCall = FindNearestVirtual(type, "OnSerialize",
+            var baseCall = FindNearestMethod(type, "OnSerialize", _refs.VoidType.FullName,
                 _refs.NetworkWriterType.FullName, "System.Boolean");
             if (baseCall != null) {
                 il.Emit(OpCodes.Ldarg_0);
@@ -771,7 +892,7 @@ namespace SegNet.CodeGen {
 
             // if (initialState) goto initial; else goto delta;
             var deltaPath = Instruction.Create(OpCodes.Nop);
-            var clearAndExit = Instruction.Create(OpCodes.Nop);
+            var endOfMethod = Instruction.Create(OpCodes.Ret);
 
             il.Emit(OpCodes.Ldarg_2);
             il.Emit(OpCodes.Brfalse, deltaPath);
@@ -782,10 +903,32 @@ namespace SegNet.CodeGen {
             // bits we'd accumulated before spawn are stale and get cleared below.
             foreach (var slot in slots)
                 EmitWriteField(il, slot);
-            il.Emit(OpCodes.Br, clearAndExit);
+            if (dirtyMaskField != null) {
+                il.Emit(OpCodes.Ldarg_0);
+                il.Emit(OpCodes.Ldc_I8, 0L);
+                il.Emit(OpCodes.Stfld, dirtyMaskField);
+            }
+            if (unreliableDirtyMaskField != null) {
+                il.Emit(OpCodes.Ldarg_0);
+                il.Emit(OpCodes.Ldc_I8, 0L);
+                il.Emit(OpCodes.Stfld, unreliableDirtyMaskField);
+            }
+            foreach (var slot in slots) {
+                if (!slot.IsCollection) continue;
+                EmitEnsureCollection(il, slot);
+                il.Emit(OpCodes.Ldarg_0);
+                il.Emit(OpCodes.Ldfld, slot.Field);
+                il.Emit(OpCodes.Callvirt, _refs.SyncCollectionClearDirty);
+            }
+            il.Emit(OpCodes.Br, endOfMethod);
 
             // ===== delta path =====
             il.Append(deltaPath);
+
+            if (dirtyMaskField == null) {
+                il.Append(endOfMethod);
+                return method;
+            }
 
             var maskLocal = new VariableDefinition(_refs.Module.TypeSystem.UInt64);
             method.Body.Variables.Add(maskLocal);
@@ -798,18 +941,18 @@ namespace SegNet.CodeGen {
             // Collection mutations dirty the owning NetworkBehaviour directly. Fold
             // each collection's own dirty flag into the per-class SyncVar mask before
             // writing it.
-            for (int i = 0; i < slots.Count; i++) {
-                if (!slots[i].IsCollection) continue;
+            for (int i = 0; i < reliableSlots.Count; i++) {
+                if (!reliableSlots[i].IsCollection) continue;
                 var skipCollectionDirty = Instruction.Create(OpCodes.Nop);
 
-                EmitEnsureCollection(il, slots[i]);
+                EmitEnsureCollection(il, reliableSlots[i]);
                 il.Emit(OpCodes.Ldarg_0);
-                il.Emit(OpCodes.Ldfld, slots[i].Field);
+                il.Emit(OpCodes.Ldfld, reliableSlots[i].Field);
                 il.Emit(OpCodes.Callvirt, _refs.SyncCollectionIsDirtyGetter);
                 il.Emit(OpCodes.Brfalse, skipCollectionDirty);
 
                 il.Emit(OpCodes.Ldloc, maskLocal);
-                il.Emit(OpCodes.Ldc_I8, 1L << i);
+                il.Emit(OpCodes.Ldc_I8, 1L << reliableSlots[i].DirtyBitIndex);
                 il.Emit(OpCodes.Or);
                 il.Emit(OpCodes.Stloc, maskLocal);
 
@@ -821,46 +964,39 @@ namespace SegNet.CodeGen {
             il.Emit(OpCodes.Ldloc, maskLocal);
             il.Emit(OpCodes.Callvirt, _writeUlong);
 
-            for (int i = 0; i < slots.Count; i++) {
+            for (int i = 0; i < reliableSlots.Count; i++) {
                 var skip = Instruction.Create(OpCodes.Nop);
                 // if ((mask & (1 << i)) == 0) skip;
                 il.Emit(OpCodes.Ldloc, maskLocal);
-                il.Emit(OpCodes.Ldc_I8, 1L << i);
+                il.Emit(OpCodes.Ldc_I8, 1L << reliableSlots[i].DirtyBitIndex);
                 il.Emit(OpCodes.And);
                 il.Emit(OpCodes.Brfalse, skip);
 
-                if (slots[i].IsCollection)
-                    EmitWriteCollectionDelta(il, slots[i]);
+                if (reliableSlots[i].IsCollection)
+                    EmitWriteCollectionDelta(il, reliableSlots[i]);
                 else
-                    EmitWriteField(il, slots[i]);
+                    EmitWriteField(il, reliableSlots[i]);
 
                 il.Append(skip);
             }
-            // Falls through to clearAndExit.
-
             // ===== clear + ret =====
-            // Reset the per-class mask whether we took the initial or delta path. The
-            // initial-state path needs this too: any bits set during construction (from
-            // setters fired before IsSpawned was true) are now obsolete because the
-            // receiving side just got the full state.
-            // Emits: this.__segnetSyncVarDirty = 0L; clear collection queues; ret
-            il.Append(clearAndExit);
             il.Emit(OpCodes.Ldarg_0);
             il.Emit(OpCodes.Ldc_I8, 0L);
             il.Emit(OpCodes.Stfld, dirtyMaskField);
-            foreach (var slot in slots) {
+            foreach (var slot in reliableSlots) {
                 if (!slot.IsCollection) continue;
                 EmitEnsureCollection(il, slot);
                 il.Emit(OpCodes.Ldarg_0);
                 il.Emit(OpCodes.Ldfld, slot.Field);
                 il.Emit(OpCodes.Callvirt, _refs.SyncCollectionClearDirty);
             }
-            il.Emit(OpCodes.Ret);
+            il.Append(endOfMethod);
 
             return method;
         }
 
-        private MethodDefinition GenerateOnDeserialize(TypeDefinition type, List<SyncVarSlot> slots) {
+        private MethodDefinition GenerateOnDeserialize(
+            TypeDefinition type, List<SyncVarSlot> slots, List<SyncVarSlot> reliableSlots) {
 
             var method = new MethodDefinition(
                 "OnDeserialize",
@@ -876,7 +1012,7 @@ namespace SegNet.CodeGen {
             var il = method.Body.GetILProcessor();
 
             // base.OnDeserialize(reader, initialState);
-            var baseCall = FindNearestVirtual(type, "OnDeserialize",
+            var baseCall = FindNearestMethod(type, "OnDeserialize", _refs.VoidType.FullName,
                 _refs.NetworkReaderType.FullName, "System.Boolean");
             if (baseCall != null) {
                 il.Emit(OpCodes.Ldarg_0);
@@ -904,6 +1040,11 @@ namespace SegNet.CodeGen {
             // ===== delta path =====
             il.Append(deltaPath);
 
+            if (reliableSlots.Count == 0) {
+                il.Append(endOfMethod);
+                return method;
+            }
+
             var maskLocal = new VariableDefinition(_refs.Module.TypeSystem.UInt64);
             method.Body.Variables.Add(maskLocal);
 
@@ -912,23 +1053,256 @@ namespace SegNet.CodeGen {
             il.Emit(OpCodes.Callvirt, _readUlong);
             il.Emit(OpCodes.Stloc, maskLocal);
 
-            for (int i = 0; i < slots.Count; i++) {
+            for (int i = 0; i < reliableSlots.Count; i++) {
                 var skip = Instruction.Create(OpCodes.Nop);
 
                 il.Emit(OpCodes.Ldloc, maskLocal);
-                il.Emit(OpCodes.Ldc_I8, 1L << i);
+                il.Emit(OpCodes.Ldc_I8, 1L << reliableSlots[i].DirtyBitIndex);
                 il.Emit(OpCodes.And);
                 il.Emit(OpCodes.Brfalse, skip);
 
-                if (slots[i].IsCollection)
-                    EmitReadCollectionDelta(il, slots[i]);
+                if (reliableSlots[i].IsCollection)
+                    EmitReadCollectionDelta(il, reliableSlots[i]);
                 else
-                    EmitReadAndApply(il, method, slots[i]);
+                    EmitReadAndApply(il, method, reliableSlots[i]);
 
                 il.Append(skip);
             }
 
             il.Append(endOfMethod);
+            return method;
+        }
+
+        private MethodDefinition GenerateShouldSerializeUnreliable(
+            TypeDefinition type, List<SyncVarSlot> unreliableSlots, FieldDefinition dirtyMaskField) {
+
+            var method = new MethodDefinition(
+                "ShouldSerializeUnreliable",
+                MethodAttributes.Public | MethodAttributes.HideBySig | MethodAttributes.Virtual,
+                _refs.Module.TypeSystem.Boolean);
+            method.Parameters.Add(new ParameterDefinition(
+                "nowSeconds", ParameterAttributes.None, _refs.Module.TypeSystem.Single));
+            type.Methods.Add(method);
+
+            var il = method.Body.GetILProcessor();
+            var returnTrue = Instruction.Create(OpCodes.Ldc_I4_1);
+            var returnFalse = Instruction.Create(OpCodes.Ldc_I4_0);
+            var endRet = Instruction.Create(OpCodes.Ret);
+
+            var baseCall = FindNearestMethod(type, "ShouldSerializeUnreliable", "System.Boolean",
+                "System.Single");
+            if (baseCall != null) {
+                il.Emit(OpCodes.Ldarg_0);
+                il.Emit(OpCodes.Ldarg_1);
+                il.Emit(OpCodes.Call, baseCall);
+                il.Emit(OpCodes.Brtrue, returnTrue);
+            }
+
+            if (dirtyMaskField != null) {
+                il.Emit(OpCodes.Ldarg_0);
+                il.Emit(OpCodes.Ldfld, dirtyMaskField);
+                il.Emit(OpCodes.Brtrue, returnTrue);
+            }
+
+            foreach (var slot in unreliableSlots) {
+                if (slot.IsCollection) {
+                    var skipCollectionDirty = Instruction.Create(OpCodes.Nop);
+
+                    EmitEnsureCollection(il, slot);
+                    il.Emit(OpCodes.Ldarg_0);
+                    il.Emit(OpCodes.Ldfld, slot.Field);
+                    il.Emit(OpCodes.Callvirt, _refs.SyncCollectionIsDirtyGetter);
+                    il.Emit(OpCodes.Brfalse, skipCollectionDirty);
+                    il.Emit(OpCodes.Br, returnTrue);
+
+                    il.Append(skipCollectionDirty);
+                }
+
+                if (slot.NextBroadcastField == null)
+                    continue;
+
+                var skip = Instruction.Create(OpCodes.Nop);
+
+                il.Emit(OpCodes.Ldarg_0);
+                il.Emit(OpCodes.Ldfld, slot.NextBroadcastField);
+                il.Emit(OpCodes.Ldc_R4, 0f);
+                il.Emit(OpCodes.Cgt);
+                il.Emit(OpCodes.Brfalse, skip);
+
+                il.Emit(OpCodes.Ldarg_1);
+                il.Emit(OpCodes.Ldarg_0);
+                il.Emit(OpCodes.Ldfld, slot.NextBroadcastField);
+                il.Emit(OpCodes.Clt);
+                il.Emit(OpCodes.Brtrue, skip);
+                il.Emit(OpCodes.Br, returnTrue);
+
+                il.Append(skip);
+            }
+
+            il.Append(returnFalse);
+            il.Append(endRet);
+            il.Append(returnTrue);
+            il.Emit(OpCodes.Ret);
+            return method;
+        }
+
+        private MethodDefinition GenerateOnSerializeUnreliable(
+            TypeDefinition type, List<SyncVarSlot> unreliableSlots, FieldDefinition dirtyMaskField) {
+
+            var method = new MethodDefinition(
+                "OnSerializeUnreliable",
+                MethodAttributes.Public | MethodAttributes.HideBySig | MethodAttributes.Virtual,
+                _refs.VoidType);
+            method.Parameters.Add(new ParameterDefinition(
+                "writer", ParameterAttributes.None, _refs.NetworkWriterType));
+            method.Parameters.Add(new ParameterDefinition(
+                "nowSeconds", ParameterAttributes.None, _refs.Module.TypeSystem.Single));
+            type.Methods.Add(method);
+
+            method.Body.InitLocals = true;
+            var il = method.Body.GetILProcessor();
+
+            var baseCall = FindNearestMethod(type, "OnSerializeUnreliable", _refs.VoidType.FullName,
+                _refs.NetworkWriterType.FullName, "System.Single");
+            if (baseCall != null) {
+                il.Emit(OpCodes.Ldarg_0);
+                il.Emit(OpCodes.Ldarg_1);
+                il.Emit(OpCodes.Ldarg_2);
+                il.Emit(OpCodes.Call, baseCall);
+            }
+
+            var maskLocal = new VariableDefinition(_refs.Module.TypeSystem.UInt64);
+            method.Body.Variables.Add(maskLocal);
+
+            il.Emit(OpCodes.Ldarg_0);
+            il.Emit(OpCodes.Ldfld, dirtyMaskField);
+            il.Emit(OpCodes.Stloc, maskLocal);
+
+            foreach (var slot in unreliableSlots) {
+                if (slot.IsCollection) {
+                    var skipCollectionDirty = Instruction.Create(OpCodes.Nop);
+
+                    EmitEnsureCollection(il, slot);
+                    il.Emit(OpCodes.Ldarg_0);
+                    il.Emit(OpCodes.Ldfld, slot.Field);
+                    il.Emit(OpCodes.Callvirt, _refs.SyncCollectionIsDirtyGetter);
+                    il.Emit(OpCodes.Brfalse, skipCollectionDirty);
+
+                    il.Emit(OpCodes.Ldloc, maskLocal);
+                    il.Emit(OpCodes.Ldc_I8, 1L << slot.DirtyBitIndex);
+                    il.Emit(OpCodes.Or);
+                    il.Emit(OpCodes.Stloc, maskLocal);
+
+                    il.Append(skipCollectionDirty);
+                }
+
+                if (slot.NextBroadcastField == null)
+                    continue;
+
+                var skip = Instruction.Create(OpCodes.Nop);
+
+                il.Emit(OpCodes.Ldarg_0);
+                il.Emit(OpCodes.Ldfld, slot.NextBroadcastField);
+                il.Emit(OpCodes.Ldc_R4, 0f);
+                il.Emit(OpCodes.Cgt);
+                il.Emit(OpCodes.Brfalse, skip);
+
+                il.Emit(OpCodes.Ldarg_2);
+                il.Emit(OpCodes.Ldarg_0);
+                il.Emit(OpCodes.Ldfld, slot.NextBroadcastField);
+                il.Emit(OpCodes.Clt);
+                il.Emit(OpCodes.Brtrue, skip);
+
+                il.Emit(OpCodes.Ldloc, maskLocal);
+                il.Emit(OpCodes.Ldc_I8, 1L << slot.DirtyBitIndex);
+                il.Emit(OpCodes.Or);
+                il.Emit(OpCodes.Stloc, maskLocal);
+
+                il.Append(skip);
+            }
+
+            il.Emit(OpCodes.Ldarg_1);
+            il.Emit(OpCodes.Ldloc, maskLocal);
+            il.Emit(OpCodes.Callvirt, _writeUlong);
+
+            foreach (var slot in unreliableSlots) {
+                var skip = Instruction.Create(OpCodes.Nop);
+                il.Emit(OpCodes.Ldloc, maskLocal);
+                il.Emit(OpCodes.Ldc_I8, 1L << slot.DirtyBitIndex);
+                il.Emit(OpCodes.And);
+                il.Emit(OpCodes.Brfalse, skip);
+
+                EmitWriteField(il, slot);
+
+                if (slot.NextBroadcastField != null) {
+                    il.Emit(OpCodes.Ldarg_0);
+                    il.Emit(OpCodes.Ldarg_2);
+                    il.Emit(OpCodes.Ldc_R4, slot.MinBroadcastSeconds);
+                    il.Emit(OpCodes.Add);
+                    il.Emit(OpCodes.Stfld, slot.NextBroadcastField);
+                }
+
+                il.Append(skip);
+            }
+
+            il.Emit(OpCodes.Ldarg_0);
+            il.Emit(OpCodes.Ldc_I8, 0L);
+            il.Emit(OpCodes.Stfld, dirtyMaskField);
+            foreach (var slot in unreliableSlots) {
+                if (!slot.IsCollection) continue;
+                EmitEnsureCollection(il, slot);
+                il.Emit(OpCodes.Ldarg_0);
+                il.Emit(OpCodes.Ldfld, slot.Field);
+                il.Emit(OpCodes.Callvirt, _refs.SyncCollectionClearDirty);
+            }
+            il.Emit(OpCodes.Ret);
+            return method;
+        }
+
+        private MethodDefinition GenerateOnDeserializeUnreliable(
+            TypeDefinition type, List<SyncVarSlot> unreliableSlots) {
+
+            var method = new MethodDefinition(
+                "OnDeserializeUnreliable",
+                MethodAttributes.Public | MethodAttributes.HideBySig | MethodAttributes.Virtual,
+                _refs.VoidType);
+            method.Parameters.Add(new ParameterDefinition(
+                "reader", ParameterAttributes.None, _refs.NetworkReaderType));
+            type.Methods.Add(method);
+
+            method.Body.InitLocals = true;
+            var il = method.Body.GetILProcessor();
+
+            var baseCall = FindNearestMethod(type, "OnDeserializeUnreliable", _refs.VoidType.FullName,
+                _refs.NetworkReaderType.FullName);
+            if (baseCall != null) {
+                il.Emit(OpCodes.Ldarg_0);
+                il.Emit(OpCodes.Ldarg_1);
+                il.Emit(OpCodes.Call, baseCall);
+            }
+
+            var maskLocal = new VariableDefinition(_refs.Module.TypeSystem.UInt64);
+            method.Body.Variables.Add(maskLocal);
+
+            il.Emit(OpCodes.Ldarg_1);
+            il.Emit(OpCodes.Callvirt, _readUlong);
+            il.Emit(OpCodes.Stloc, maskLocal);
+
+            foreach (var slot in unreliableSlots) {
+                var skip = Instruction.Create(OpCodes.Nop);
+
+                il.Emit(OpCodes.Ldloc, maskLocal);
+                il.Emit(OpCodes.Ldc_I8, 1L << slot.DirtyBitIndex);
+                il.Emit(OpCodes.And);
+                il.Emit(OpCodes.Brfalse, skip);
+                if (slot.IsCollection)
+                    EmitReadCollectionFull(il, slot);
+                else
+                    EmitReadAndApply(il, method, slot, suppressIfUnchanged: true);
+                il.Append(skip);
+            }
+
+            il.Emit(OpCodes.Ret);
             return method;
         }
 
@@ -986,12 +1360,13 @@ namespace SegNet.CodeGen {
         ///                                   // so this never marks dirty on the receiver
         ///   if (hook != null) this.hook(oldVal, newVal);  // or this.hook() for no-arg form
         /// </summary>
-        private void EmitReadAndApply(ILProcessor il, MethodDefinition owner, SyncVarSlot slot) {
+        private void EmitReadAndApply(
+            ILProcessor il, MethodDefinition owner, SyncVarSlot slot, bool suppressIfUnchanged = false) {
             bool hookWantsOldNew =
                 slot.HookMethod != null && slot.HookMethod.Parameters.Count == 2;
 
             VariableDefinition oldLocal = null;
-            if (hookWantsOldNew) {
+            if (hookWantsOldNew || suppressIfUnchanged) {
                 oldLocal = new VariableDefinition(slot.Field.FieldType);
                 owner.Body.Variables.Add(oldLocal);
 
@@ -1012,6 +1387,15 @@ namespace SegNet.CodeGen {
             }
             il.Emit(OpCodes.Stloc, newLocal);
 
+            Instruction skipApply = null;
+            if (suppressIfUnchanged) {
+                skipApply = Instruction.Create(OpCodes.Nop);
+                il.Emit(OpCodes.Ldloc, oldLocal);
+                il.Emit(OpCodes.Ldloc, newLocal);
+                EmitEqualsForType(il, slot.Field.FieldType);
+                il.Emit(OpCodes.Brtrue, skipApply);
+            }
+
             // this.field = newVal;  (direct stfld; this method is generated, not in the
             // rewrite snapshot, so the rewrite pass never touches it.)
             il.Emit(OpCodes.Ldarg_0);
@@ -1027,6 +1411,9 @@ namespace SegNet.CodeGen {
                 }
                 il.Emit(OpCodes.Callvirt, slot.HookMethod);
             }
+
+            if (skipApply != null)
+                il.Append(skipApply);
         }
 
         // ----------------------------------------------------------------
@@ -1043,9 +1430,8 @@ namespace SegNet.CodeGen {
         /// `call` is non-virtual and the method token must point at a class that
         /// actually owns the method body.
         /// </summary>
-        private MethodReference FindNearestVirtual(
-            TypeDefinition type, string name, string firstParamFullName, string secondParamFullName) {
-
+        private MethodReference FindNearestMethod(
+            TypeDefinition type, string name, string returnTypeFullName, params string[] parameterTypeFullNames) {
             TypeReference baseRef = type.BaseType;
             while (baseRef != null) {
                 var baseDef = SafeResolve(baseRef);
@@ -1054,10 +1440,17 @@ namespace SegNet.CodeGen {
                 foreach (var m in baseDef.Methods) {
                     if (m.Name != name) continue;
                     if (m.IsStatic) continue;
-                    if (m.Parameters.Count != 2) continue;
-                    if (m.ReturnType.FullName != _refs.VoidType.FullName) continue;
-                    if (m.Parameters[0].ParameterType.FullName != firstParamFullName) continue;
-                    if (m.Parameters[1].ParameterType.FullName != secondParamFullName) continue;
+                    if (m.ReturnType.FullName != returnTypeFullName) continue;
+                    if (m.Parameters.Count != parameterTypeFullNames.Length) continue;
+
+                    bool matches = true;
+                    for (int i = 0; i < parameterTypeFullNames.Length; i++) {
+                        if (m.Parameters[i].ParameterType.FullName != parameterTypeFullNames[i]) {
+                            matches = false;
+                            break;
+                        }
+                    }
+                    if (!matches) continue;
                     return _refs.Module.ImportReference(m);
                 }
 

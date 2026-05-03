@@ -29,8 +29,6 @@ namespace SegNet {
         private void Awake() {
             if (transportBehaviour != null)
                 SetTransport(transportBehaviour);
-            else
-                Debug.LogWarning("[NetworkConnectionManager] No transport assigned yet.");
         }
 
         private void OnDestroy() {

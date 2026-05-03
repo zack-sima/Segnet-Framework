@@ -38,4 +38,35 @@ namespace SegNet {
         /// </summary>
         public string hook;
     }
+
+    /// <summary>
+    /// Marks a field on a NetworkBehaviour for automatic server→client
+    /// synchronization over the unreliable channel.
+    ///
+    /// Initial state still arrives through the reliable spawn/join snapshot so late
+    /// joiners always get a complete baseline. After spawn, the IL weaver generates a
+    /// separate unreliable delta path for these fields.
+    ///
+    /// Supported types:
+    ///   - Same serializer-backed types as SyncVar
+    ///   - Sync collections also work, but are resent as full current contents over the
+    ///     unreliable path so dropped packets can self-heal on later updates
+    ///
+    /// Usage:
+    ///   [UnreliableSyncVar] float speed;
+    ///   [UnreliableSyncVar(hook = nameof(OnSpeedChanged), MinBroadcastMS = 50)] float velocityX;
+    /// </summary>
+    [AttributeUsage(AttributeTargets.Field)]
+    public class UnreliableSyncVarAttribute : Attribute {
+
+        /// <summary>Optional change hook. Same signatures as SyncVar hooks.</summary>
+        public string hook;
+
+        /// <summary>
+        /// Optional periodic resend interval in milliseconds. 0 means send only when the
+        /// value changes. Values greater than 0 keep broadcasting the current value on
+        /// this cadence after the first change.
+        /// </summary>
+        public int MinBroadcastMS;
+    }
 }

@@ -150,7 +150,7 @@ namespace SegNet {
         public NetworkBehaviour ReadNetworkBehaviour() {
             uint nid = ReadUInt();
             if (nid == 0u) return null;
-            var nm = NetworkManager.Instance;
+            var nm = BaseNetworkManager.Instance;
             if (nm != null) return nm.GetNetworkObject(nid);
             var sm = ServerManager.Instance;
             if (sm == null) return null;

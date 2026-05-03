@@ -21,7 +21,7 @@ https://github.com/zack-sima/Segnet-Framework.git?path=/Assets/Scripts/SegNet
 
 In scripts, write using SegNet; to reference classes.
 
-To have a real running game with NetworkBehaviours, you will likely want to inherit the NetworkManager with your custom class to set up player controls. See full repo sample scripts.
+To have a real running game with NetworkBehaviours, you will want to inherit from the BaseNetworkManager with your custom class (suggested: NetworkManager) to set up player controls. See full repo sample scripts.
 
 Start sessions with:
 

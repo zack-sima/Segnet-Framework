@@ -24,7 +24,7 @@ namespace SegNet {
 
         private void Awake() {
             if (Instance != null && Instance != this) {
-                if (NetworkManager.IsReplacingPersistentRoot) {
+                if (BaseNetworkManager.IsReplacingPersistentRoot) {
                     Debug.Log("[NetworkSceneManager] Replacing previous persistent instance.");
                     Destroy(Instance.transform.root.gameObject);
                 } else {

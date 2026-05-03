@@ -94,6 +94,10 @@ namespace SegNet {
             // +1 for the PrefixWhole byte
             if (data.Length + 1 <= maxPacket) {
                 SendWhole(target, data, channel);
+            } else if (channel == ChannelType.Unreliable) {
+                Debug.LogWarning(
+                    $"[NetworkStreamManager] Dropping oversized unreliable payload ({data.Length} bytes). " +
+                    $"Max whole-packet payload is {maxPacket - 1} bytes.");
             } else {
                 SendFragmented(target, data, channel);
             }

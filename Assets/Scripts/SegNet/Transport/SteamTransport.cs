@@ -331,8 +331,12 @@ namespace SegNet {
                             byte[] buffer = new byte[msg.m_cbSize];
                             Marshal.Copy(msg.m_pData, buffer, 0, (int)msg.m_cbSize);
                             var segment = new ArraySegment<byte>(buffer, 0, buffer.Length);
+                            ChannelType channel =
+                                (msg.m_nFlags & Constants.k_nSteamNetworkingSend_Reliable) != 0
+                                ? ChannelType.Reliable
+                                : ChannelType.Unreliable;
 
-                            OnData?.Invoke(id, segment, ChannelType.Unreliable);
+                            OnData?.Invoke(id, segment, channel);
                         }
 
                         SteamNetworkingMessage_t.Release(ptr);

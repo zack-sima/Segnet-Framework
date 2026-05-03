@@ -26,6 +26,7 @@ namespace SegNet {
         private NetworkConnectionManager connectionManager;
         private NetworkStreamManager streamManager;
         private PrefabRegistry prefabRegistry;
+        private float steamClientRpcRateLimit;
 
         // ---- State ----
 
@@ -63,6 +64,8 @@ namespace SegNet {
         private readonly Dictionary<ConnectionId, NetworkPlayer> _connectionToPlayer =
             new Dictionary<ConnectionId, NetworkPlayer>();
         private int _nextPlayerId = 1;
+        private readonly Dictionary<ConnectionId, RpcRateLimitState> _incomingRpcRateLimits =
+            new Dictionary<ConnectionId, RpcRateLimitState>();
 
         public IReadOnlyDictionary<int, NetworkPlayer> Players => _players;
         public NetworkPlayer LocalPlayer { get; private set; }
@@ -95,7 +98,7 @@ namespace SegNet {
 
         private void Awake() {
             if (Instance != null && Instance != this) {
-                if (NetworkManager.IsReplacingPersistentRoot) {
+                if (BaseNetworkManager.IsReplacingPersistentRoot) {
                     Debug.Log("[ServerManager] Replacing previous persistent instance.");
                     Destroy(Instance.transform.root.gameObject);
                 } else {
@@ -115,10 +118,11 @@ namespace SegNet {
         }
 
         public void Configure(NetworkConnectionManager connection, NetworkStreamManager stream,
-            PrefabRegistry registry) {
+            PrefabRegistry registry, float steamRpcRateLimit = 0f) {
             connectionManager = connection;
             streamManager = stream;
             prefabRegistry = registry;
+            steamClientRpcRateLimit = Mathf.Max(0f, steamRpcRateLimit);
         }
 
         private void OnDestroy() {
@@ -135,7 +139,7 @@ namespace SegNet {
 
         private void LateUpdate() {
             if (IsServer) {
-                ProcessDirtyObjects();
+                ProcessDirtyObjects(Time.realtimeSinceStartup);
                 SendHeartbeatIfDue();
             }
         }
@@ -225,6 +229,7 @@ namespace SegNet {
             _nextNetworkId = 1;
             _nextPlayerId = 1;
             _nextHeartbeatAt = 0f;
+            _incomingRpcRateLimits.Clear();
 
             Debug.Log($"[ServerManager] Stopped (was {previousState}).");
             OnStopped?.Invoke();
@@ -341,6 +346,7 @@ namespace SegNet {
         private void HandleClientDisconnected(ConnectionId connId, DisconnectReason reason) {
             Debug.Log($"[ServerManager] Client disconnected: {connId} ({reason})");
             OnClientDisconnected?.Invoke(connId, reason);
+            _incomingRpcRateLimits.Remove(connId);
 
             if (!IsServer) return;
 
@@ -382,6 +388,7 @@ namespace SegNet {
                 behaviour.ComponentIndex = 0;
                 behaviour.Root = behaviour;
                 behaviour.AllBehaviours = new[] { behaviour };
+                behaviour.ResetUnreliableStateTracking();
                 behaviour.IsSpawned = true;
 
                 _networkedObjects[nid] = behaviour;
@@ -433,6 +440,7 @@ namespace SegNet {
                 b.ComponentIndex = i;
                 b.Root = root;
                 b.OwnerPlayer = owner;
+                b.ResetUnreliableStateTracking();
                 b.IsSpawned = true;
             }
 
@@ -499,7 +507,7 @@ namespace SegNet {
         //  Server: state replication (dirty flush)
         // ==================================================================
 
-        private void ProcessDirtyObjects() {
+        private void ProcessDirtyObjects(float nowSeconds) {
             foreach (var kvp in _networkedObjects) {
                 var root = kvp.Value;
                 if (root == null || root.AllBehaviours == null) continue;
@@ -507,6 +515,8 @@ namespace SegNet {
                 foreach (var b in root.AllBehaviours) {
                     if (b != null && b.ConsumeDirty())
                         SendStateUpdateToAll(root.NetworkId, b.ComponentIndex, b);
+                    if (b != null && b.ShouldSerializeUnreliable(nowSeconds))
+                        SendUnreliableStateUpdateToAll(root.NetworkId, b.ComponentIndex, b, nowSeconds);
                 }
             }
         }
@@ -555,6 +565,17 @@ namespace SegNet {
             Messages.Broadcast(NetworkMessageType.StateUpdate, writer);
         }
 
+        private void SendUnreliableStateUpdateToAll(
+            uint networkId, int componentIndex, NetworkBehaviour behaviour, float nowSeconds) {
+
+            var writer = new NetworkWriter();
+            writer.WriteUInt(networkId);
+            writer.WriteUShort((ushort)componentIndex);
+            writer.WriteUShort(behaviour.NextUnreliableSequence++);
+            behaviour.OnSerializeUnreliable(writer, nowSeconds);
+            Messages.Broadcast(NetworkMessageType.UnreliableStateUpdate, writer, ChannelType.Unreliable);
+        }
+
         private void SendPlayerJoined(ConnectionId target, NetworkPlayer player, bool isYou) {
             var writer = new NetworkWriter();
             writer.WriteInt(player.PlayerId);
@@ -587,6 +608,7 @@ namespace SegNet {
             Messages.RegisterHandler(NetworkMessageType.Spawn, OnMsg_Spawn);
             Messages.RegisterHandler(NetworkMessageType.Despawn, OnMsg_Despawn);
             Messages.RegisterHandler(NetworkMessageType.StateUpdate, OnMsg_StateUpdate);
+            Messages.RegisterHandler(NetworkMessageType.UnreliableStateUpdate, OnMsg_UnreliableStateUpdate);
             Messages.RegisterHandler(NetworkMessageType.Heartbeat, OnMsg_Heartbeat);
             Messages.RegisterHandler(NetworkMessageType.RPC, OnMsg_Rpc);
         }
@@ -597,6 +619,7 @@ namespace SegNet {
             Messages.UnregisterHandler(NetworkMessageType.Spawn);
             Messages.UnregisterHandler(NetworkMessageType.Despawn);
             Messages.UnregisterHandler(NetworkMessageType.StateUpdate);
+            Messages.UnregisterHandler(NetworkMessageType.UnreliableStateUpdate);
             Messages.UnregisterHandler(NetworkMessageType.Heartbeat);
             Messages.UnregisterHandler(NetworkMessageType.RPC);
         }
@@ -673,6 +696,7 @@ namespace SegNet {
                 root.Root = root;
                 root.AllBehaviours = new[] { root };
                 root.OwnerPlayer = owner;
+                root.ResetUnreliableStateTracking();
                 root.IsSpawned = true;
 
             } else {
@@ -707,6 +731,7 @@ namespace SegNet {
                     b.ComponentIndex = i;
                     b.Root = root;
                     b.OwnerPlayer = owner;
+                    b.ResetUnreliableStateTracking();
                     b.IsSpawned = true;
                 }
             }
@@ -768,6 +793,29 @@ namespace SegNet {
             behaviours[componentIndex].OnDeserialize(reader, false);
         }
 
+        private void OnMsg_UnreliableStateUpdate(ConnectionId from, NetworkReader reader) {
+            if (IsHost) return;
+
+            uint networkId = reader.ReadUInt();
+            ushort componentIndex = reader.ReadUShort();
+            ushort sequence = reader.ReadUShort();
+
+            if (!_networkedObjects.TryGetValue(networkId, out var root) || root == null)
+                return;
+
+            var behaviours = root.AllBehaviours ?? new[] { root };
+            if (componentIndex >= behaviours.Length)
+                return;
+
+            var behaviour = behaviours[componentIndex];
+            if (behaviour == null || !IsNewerUnreliableSequence(behaviour, sequence))
+                return;
+
+            behaviour.LastReceivedUnreliableSequence = sequence;
+            behaviour.HasReceivedUnreliableState = true;
+            behaviour.OnDeserializeUnreliable(reader);
+        }
+
         private void OnMsg_Heartbeat(ConnectionId from, NetworkReader reader) { }
 
         // ---- RPC ----
@@ -800,6 +848,9 @@ namespace SegNet {
             }
 
             byte[] argBytes = argLen > 0 ? reader.ReadRawBytes(argLen) : Array.Empty<byte>();
+
+            if (IsServer && !AllowIncomingClientRpc(from))
+                return;
 
             if (!_networkedObjects.TryGetValue(networkId, out var root) || root == null) {
                 Debug.LogWarning(
@@ -855,6 +906,36 @@ namespace SegNet {
             }
         }
 
+        private bool AllowIncomingClientRpc(ConnectionId from) {
+            if (steamClientRpcRateLimit <= 0f || connectionManager == null)
+                return true;
+
+            if (!(connectionManager.ActiveTransport is SteamTransport))
+                return true;
+
+            float now = Time.realtimeSinceStartup;
+            if (!_incomingRpcRateLimits.TryGetValue(from, out var state)) {
+                state = new RpcRateLimitState {
+                    Tokens = steamClientRpcRateLimit,
+                    LastTime = now
+                };
+            } else {
+                float elapsed = Mathf.Max(0f, now - state.LastTime);
+                state.Tokens = Mathf.Min(steamClientRpcRateLimit,
+                    state.Tokens + elapsed * steamClientRpcRateLimit);
+                state.LastTime = now;
+            }
+
+            if (state.Tokens < 1f) {
+                _incomingRpcRateLimits[from] = state;
+                return false;
+            }
+
+            state.Tokens -= 1f;
+            _incomingRpcRateLimits[from] = state;
+            return true;
+        }
+
         // ==================================================================
         //  Player creation / destruction
         // ==================================================================
@@ -901,6 +982,26 @@ namespace SegNet {
 
             _players.Clear();
             _connectionToPlayer.Clear();
+            _incomingRpcRateLimits.Clear();
+        }
+
+        private struct RpcRateLimitState {
+            public float Tokens;
+            public float LastTime;
+        }
+
+        private static bool IsNewerUnreliableSequence(NetworkBehaviour behaviour, ushort sequence) {
+            if (behaviour == null)
+                return false;
+
+            if (!behaviour.HasReceivedUnreliableState)
+                return true;
+
+            ushort previous = behaviour.LastReceivedUnreliableSequence;
+            if (sequence == previous)
+                return false;
+
+            return (ushort)(sequence - previous) < 32768;
         }
 
         // ==================================================================

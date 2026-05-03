@@ -11,9 +11,9 @@ namespace SegNet {
     /// Add this one component to a GameObject; it creates and configures the SegNet
     /// runtime managers/transports underneath itself.
     /// </summary>
-    [DefaultExecutionOrder(-900)]
-    public class NetworkManager : MonoBehaviour {
-        public static NetworkManager Instance { get; private set; }
+    [DefaultExecutionOrder(-1100)]
+    public class BaseNetworkManager : MonoBehaviour {
+        public static BaseNetworkManager Instance { get; private set; }
         internal static bool IsReplacingPersistentRoot { get; private set; }
 
         [Header("Scenes")]
@@ -26,6 +26,9 @@ namespace SegNet {
         [Tooltip("Use Steam transport instead of direct TCP local/network address transport.")]
         [SerializeField] private bool useSteamTransport;
         [SerializeField] private int clientTimeoutMs = 10000;
+        [Tooltip("Maximum number of client-to-server RPCs per second accepted from each Steam client. 0 disables the limit.")]
+        [Range(0f, 120f)]
+        [SerializeField] private float steamClientRpcRateLimit = 0f;
 
         [Header("Steam Transport")]
         [Tooltip("Steam lobby room key used when hosting or joining through Steam.")]
@@ -167,6 +170,8 @@ namespace SegNet {
                 localAddress = "127.0.0.1";
             if (localPort <= 0)
                 localPort = 8000;
+            if (steamClientRpcRateLimit < 0f)
+                steamClientRpcRateLimit = 0f;
         }
 
         private void HandleClientDisconnected(ConnectionId connectionId, DisconnectReason reason) {
@@ -300,6 +305,7 @@ namespace SegNet {
 
             transportMode = mode;
             useSteamTransport = mode == NetworkTransportMode.Steam;
+            ApplyRuntimeComponentActivation();
 
             switch (transportMode) {
                 case NetworkTransportMode.Local:
@@ -374,43 +380,52 @@ namespace SegNet {
             transportMode = useSteamTransport ? NetworkTransportMode.Steam : NetworkTransportMode.Local;
 
             steamManager = GetOrCreateRuntimeComponent<SteamManager>("SteamManager");
-            ActivateRuntimeComponent(steamManager);
-
             localTransport = GetOrCreateRuntimeComponent<LocalTransport>("LocalTransport");
             localTransport.Configure(localAddress, localPort);
-            ActivateRuntimeComponent(localTransport);
 
             steamTransport = GetOrCreateRuntimeComponent<SteamTransport>("SteamTransport");
             steamTransport.ConfigureRoom(steamRoomNumber);
-            ActivateRuntimeComponent(steamTransport);
 
             connectionManager = GetOrCreateRuntimeComponent<NetworkConnectionManager>(
                 "NetworkConnectionManager");
             connectionManager.Configure(clientTimeoutMs);
+            ApplyRuntimeComponentActivation();
             connectionManager.SetTransport(transportMode == NetworkTransportMode.Steam
                 ? (ITransport)steamTransport
                 : localTransport);
-            ActivateRuntimeComponent(connectionManager);
 
             streamManager = GetOrCreateRuntimeComponent<NetworkStreamManager>(
                 "NetworkStreamManager");
             streamManager.Configure(connectionManager);
-            ActivateRuntimeComponent(streamManager);
 
             sceneManager = GetOrCreateRuntimeComponent<NetworkSceneManager>(
                 "NetworkSceneManager");
-            ActivateRuntimeComponent(sceneManager);
 
             serverManager = GetOrCreateRuntimeComponent<ServerManager>("ServerManager");
-            serverManager.Configure(connectionManager, streamManager, prefabRegistry);
-            ActivateRuntimeComponent(serverManager);
+            serverManager.Configure(connectionManager, streamManager, prefabRegistry,
+                steamClientRpcRateLimit);
+            ApplyRuntimeComponentActivation();
 
             _runtimeReady = true;
         }
 
-        private static void ActivateRuntimeComponent(Component component) {
-            if (component != null && !component.gameObject.activeSelf)
-                component.gameObject.SetActive(true);
+        private void ApplyRuntimeComponentActivation() {
+            bool steamEnabled = transportMode == NetworkTransportMode.Steam;
+
+            SetRuntimeComponentActive(steamManager, steamEnabled);
+            SetRuntimeComponentActive(steamTransport, steamEnabled);
+            SetRuntimeComponentActive(localTransport, true);
+            SetRuntimeComponentActive(connectionManager, true);
+            SetRuntimeComponentActive(streamManager, true);
+            SetRuntimeComponentActive(sceneManager, true);
+            SetRuntimeComponentActive(serverManager, true);
+        }
+
+        private static void SetRuntimeComponentActive(Component component, bool isActive) {
+            if (component == null || component.gameObject.activeSelf == isActive)
+                return;
+
+            component.gameObject.SetActive(isActive);
         }
 
         private T GetOrCreateRuntimeComponent<T>(string objectName) where T : Component {

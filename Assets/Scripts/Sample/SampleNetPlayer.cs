@@ -3,7 +3,7 @@ using UnityEngine;
 
 public class SampleNetPlayer : NetworkBehaviour {
 
-    [SyncVar(hook = nameof(OnTestStringChanged))] private string testString;
+    [UnreliableSyncVar(MinBroadcastMS = 100, hook = nameof(OnTestStringChanged))] private string testString;
     [SyncVar(hook = nameof(OnPositionChanged))] private Vector3 position;
     [SyncVar(hook = nameof(OnListChanged)), Capacity(10)] private SyncList<string> recentMessages;
 

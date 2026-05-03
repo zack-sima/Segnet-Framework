@@ -3,7 +3,7 @@ using UnityEditor;
 
 namespace SegNet.Editor {
 
-    [CustomEditor(typeof(NetworkManager), true)]
+    [CustomEditor(typeof(BaseNetworkManager), true)]
     public class NetworkManagerEditor : UnityEditor.Editor {
         public override void OnInspectorGUI() {
             serializedObject.Update();

@@ -1441,8 +1441,10 @@ MonoBehaviour:
   m_EditorClassIdentifier: 
   gameScene: Sample Game Scene
   menuScene: Sample Menu Scene
-  useSteamTransport: 1
+  useSteamTransport: 0
   clientTimeoutMs: 10000
+  steamClientRpcRateLimit: 0
+  steamRoomNumber: TEST_ROOM_42069
   localAddress: 127.0.0.1
   localPort: 8000
   prefabRegistry: {fileID: 11400000, guid: 772bcd529ac5149ffa1201cd1a61ac33, type: 2}
