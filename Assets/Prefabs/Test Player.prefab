@@ -144,3 +144,7 @@ MonoBehaviour:
   syncPosition: 1
   syncRotation: 1
   syncScale: 1
+  sendRateLimitMs: 200
+  interpolationMethod: 1
+  maxServerVelocity: 2
+  maxRubberBandToleranceMs: 500

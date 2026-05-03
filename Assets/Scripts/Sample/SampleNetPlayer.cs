@@ -4,15 +4,8 @@ using UnityEngine;
 public class SampleNetPlayer : NetworkBehaviour {
 
     [UnreliableSyncVar(MinBroadcastMS = 100, hook = nameof(OnTestStringChanged))] private string testString;
-    [SyncVar(hook = nameof(OnPositionChanged))] private Vector3 position;
     [SyncVar(hook = nameof(OnListChanged)), Capacity(10)] private SyncList<string> recentMessages;
 
-    [Rpc(RpcDirection.LocalClientToServer)]
-    public void RpcSyncPosition(Vector3 newPosition) {
-        transform.position = newPosition;
-        testString = $"Position updated to {newPosition} at {Time.time}";
-        position = newPosition;
-    }
     [Rpc(RpcDirection.LocalClientToServer)]
     public void RpcSendMessage(string message) {
         recentMessages.Add(message);
@@ -27,9 +20,7 @@ public class SampleNetPlayer : NetworkBehaviour {
         OnListChanged();
     }
     public void OnListChanged() {
-        // Debug.Log($"Recent messages list changed: {changeEvent}");
-        SampleGameUI.Instance.testTextDisplay.text = $"Position: {position}" +
-            $"\nTest String: {testString}" + $"\nPlayer ID: {OwnerPlayer.PlayerId}";
+        RefreshUi();
 
         if (recentMessages.Count > 0) {
             SampleGameUI.Instance.testTextDisplay.text += "\nRecent Messages:";
@@ -38,18 +29,12 @@ public class SampleNetPlayer : NetworkBehaviour {
         }
     }
 
-    private void OnPositionChanged(Vector3 _, Vector3 newPosition) {
-        transform.position = newPosition;
-        // Debug.Log($"Position changed to {position}");
-        SampleGameUI.Instance.testTextDisplay.text = $"Position: {position}" +
+    private void RefreshUi() {
+        SampleGameUI.Instance.testTextDisplay.text = $"Position: {transform.position}" +
             $"\nTest String: {testString}" + $"\nPlayer ID: {OwnerPlayer.PlayerId}";
     }
 
     void Update() {
-        if (IsServer && position != transform.position) {
-            position = transform.position; // server authoritative position sync
-        }
-
         //only local player can do controls!
         if (!IsLocalPlayer) return;
 

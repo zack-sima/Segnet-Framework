@@ -20,6 +20,8 @@ public class NetworkManager : BaseNetworkManager {
     protected override void Start() {
         base.Start();
 
+        Application.targetFrameRate = 60;
+
         if (ServerManager.Instance == null) {
             Debug.LogError("[NetworkManager] ServerManager not found in scene.");
             return;
