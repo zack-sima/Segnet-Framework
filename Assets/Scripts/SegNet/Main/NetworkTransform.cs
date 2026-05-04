@@ -351,10 +351,33 @@ namespace SegNet {
             }
 
             Func<Vector3, bool> validator = PositionValidator;
-            if (validator != null && !validator(incomingPosition))
-                return false;
+            if (validator != null) {
+                if (!ValidateIntermediatePositions(validator, transform.position, incomingPosition))
+                    return false;
+
+                if (!validator(incomingPosition))
+                    return false;
+            }
 
             _lastServerAcceptedAt = Time.realtimeSinceStartup;
+            return true;
+        }
+
+        private static bool ValidateIntermediatePositions(Func<Vector3, bool> validator,
+            Vector3 fromPosition, Vector3 toPosition) {
+            float distance = Vector3.Distance(fromPosition, toPosition);
+            int midpointChecks = Mathf.FloorToInt(distance);
+
+            if (midpointChecks <= 0)
+                return true;
+
+            for (int i = 1; i <= midpointChecks; i++) {
+                float t = (float)i / (midpointChecks + 1);
+                Vector3 sample = Vector3.Lerp(fromPosition, toPosition, t);
+                if (!validator(sample))
+                    return false;
+            }
+
             return true;
         }
 
