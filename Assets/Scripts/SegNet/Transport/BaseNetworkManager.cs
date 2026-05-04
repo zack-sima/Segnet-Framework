@@ -15,6 +15,8 @@ namespace SegNet {
     public class BaseNetworkManager : MonoBehaviour {
         public static BaseNetworkManager Instance { get; private set; }
         internal static bool IsReplacingPersistentRoot { get; private set; }
+        private static bool HasPendingSingleSceneStart { get; set; }
+        private static NetworkState PendingSingleSceneStartState { get; set; } = NetworkState.Offline;
 
         [Header("Scenes")]
         [Tooltip("Optional scene to load before starting host/server/client.")]
@@ -61,6 +63,9 @@ namespace SegNet {
         private long _lastStatBytesIn;
         private long _lastStatBytesOut;
         private float _lastStatTime;
+
+        private bool UsesSingleSceneLoop =>
+            string.IsNullOrWhiteSpace(gameScene) && string.IsNullOrWhiteSpace(menuScene);
 
         public event Action<NetworkBehaviour> OnObjectSpawned;
         public event Action<NetworkBehaviour> OnObjectDespawned;
@@ -145,6 +150,8 @@ namespace SegNet {
                 Debug.Log($"[NetworkManager] === NETWORK STARTED ({sm.State}) ===");
             sm.OnStopped += () =>
                 Debug.Log("[NetworkManager] === NETWORK STOPPED ===");
+
+            TryResumePendingSingleSceneStart();
         }
 
         protected virtual void OnDestroy() {
@@ -204,41 +211,24 @@ namespace SegNet {
 
             _isTransitioning = true;
 
-            NetworkSceneManager.Instance?.ClearSceneObjects();
+            if (UsesSingleSceneLoop) {
+                HasPendingSingleSceneStart = true;
+                PendingSingleSceneStartState = targetState;
+                IsReplacingPersistentRoot = true;
 
-            //if both are white space/null, load this current scene again
-            if (string.IsNullOrWhiteSpace(gameScene) &&
-                string.IsNullOrWhiteSpace(menuScene)) {
                 string scene = SceneManager.GetActiveScene().name;
                 yield return SceneManager.LoadSceneAsync(scene);
+                yield break;
+            }
 
-            } else if (!string.IsNullOrWhiteSpace(gameScene) &&
+            NetworkSceneManager.Instance?.ClearSceneObjects();
+
+            if (!string.IsNullOrWhiteSpace(gameScene) &&
                 SceneManager.GetActiveScene().name != gameScene) {
                 yield return SceneManager.LoadSceneAsync(gameScene);
             }
 
-            var sm = ServerManager.Instance;
-            if (sm == null) {
-                Debug.LogError("[NetworkManager] Cannot start session: ServerManager not found.");
-                _isTransitioning = false;
-                yield break;
-            }
-
-            switch (targetState) {
-                case NetworkState.Server:
-                    ResetBandwidthStats();
-                    sm.StartServer();
-                    break;
-                case NetworkState.Host:
-                    ResetBandwidthStats();
-                    sm.StartHost();
-                    break;
-                case NetworkState.Client:
-                    ResetBandwidthStats();
-                    sm.StartClient();
-                    break;
-            }
-
+            StartRequestedSession(targetState);
             _isTransitioning = false;
         }
 
@@ -254,6 +244,15 @@ namespace SegNet {
 
             NetworkSceneManager.Instance?.ClearSceneObjects();
 
+            if (UsesSingleSceneLoop) {
+                HasPendingSingleSceneStart = false;
+                PendingSingleSceneStartState = NetworkState.Offline;
+                IsReplacingPersistentRoot = true;
+                string scene = SceneManager.GetActiveScene().name;
+                yield return SceneManager.LoadSceneAsync(scene);
+                yield break;
+            }
+
             GameObject persistentRoot = transform.root.gameObject;
 
             if (!string.IsNullOrWhiteSpace(menuScene) &&
@@ -263,6 +262,49 @@ namespace SegNet {
             }
 
             Destroy(persistentRoot);
+        }
+
+        private void TryResumePendingSingleSceneStart() {
+            if (!HasPendingSingleSceneStart || !UsesSingleSceneLoop || Instance != this)
+                return;
+
+            NetworkState pendingState = PendingSingleSceneStartState;
+            HasPendingSingleSceneStart = false;
+            PendingSingleSceneStartState = NetworkState.Offline;
+
+            StartCoroutine(ResumePendingSingleSceneStart(pendingState));
+        }
+
+        private IEnumerator ResumePendingSingleSceneStart(NetworkState targetState) {
+            if (_isTransitioning)
+                yield break;
+
+            _isTransitioning = true;
+            yield return null;
+            StartRequestedSession(targetState);
+            _isTransitioning = false;
+        }
+
+        private void StartRequestedSession(NetworkState targetState) {
+            var sm = ServerManager.Instance;
+            if (sm == null) {
+                Debug.LogError("[NetworkManager] Cannot start session: ServerManager not found.");
+                return;
+            }
+
+            ResetBandwidthStats();
+
+            switch (targetState) {
+                case NetworkState.Server:
+                    sm.StartServer();
+                    break;
+                case NetworkState.Host:
+                    sm.StartHost();
+                    break;
+                case NetworkState.Client:
+                    sm.StartClient();
+                    break;
+            }
         }
 
         // Public API, call from scripts!
