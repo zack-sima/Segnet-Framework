@@ -18,6 +18,8 @@ namespace SegNet {
                  "Index determines stable prefab ID (starting at 1). Do not reorder after shipping.")]
         [SerializeField] private List<GameObject> prefabs = new List<GameObject>();
 
+        private Dictionary<GameObject, ushort> _prefabToId;
+
         /// <summary>
         /// Look up a prefab by its stable ID. PrefabId 1 = index 0.
         /// Returns null if not found.
@@ -30,19 +32,24 @@ namespace SegNet {
 
         /// <summary>
         /// Get the stable prefab ID for a given prefab. Returns 0 if not registered.
+        /// Uses a reverse lookup dictionary built on first access — O(1) after init.
         /// </summary>
         public ushort GetPrefabId(GameObject prefab) {
-            for (int i = 0; i < prefabs.Count; i++) {
-                if (prefabs[i] == prefab)
-                    return (ushort)(i + 1);
+            if (_prefabToId == null) {
+                _prefabToId = new Dictionary<GameObject, ushort>(prefabs.Count);
+                for (int i = 0; i < prefabs.Count; i++) {
+                    if (prefabs[i] != null)
+                        _prefabToId[prefabs[i]] = (ushort)(i + 1);
+                }
             }
-            return 0;
+            return _prefabToId.TryGetValue(prefab, out var id) ? id : (ushort)0;
         }
 
         public int Count => prefabs.Count;
 
 #if UNITY_EDITOR
         private void OnValidate() {
+            _prefabToId = null; // invalidate reverse lookup on editor changes
             for (int i = 0; i < prefabs.Count; i++) {
                 if (prefabs[i] != null && prefabs[i].GetComponent<NetworkBehaviour>() == null)
                     Debug.LogWarning(

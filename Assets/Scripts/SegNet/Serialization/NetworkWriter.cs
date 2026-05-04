@@ -11,6 +11,8 @@ namespace SegNet {
         private int _position;
 
         private const int DefaultCapacity = 256;
+        private const int MaxPoolSize = 32;
+        private static readonly Stack<NetworkWriter> _pool = new Stack<NetworkWriter>();
 
         public int Position => _position;
         public int Length => _position;
@@ -21,6 +23,26 @@ namespace SegNet {
 
         public NetworkWriter(int capacity) {
             _buffer = new byte[capacity];
+        }
+
+        // ---- Pooling ----
+
+        /// <summary>Get a writer from the pool (or create one). Call Return() when done.</summary>
+        public static NetworkWriter Get() {
+            if (_pool.Count > 0) {
+                var w = _pool.Pop();
+                w._position = 0;
+                return w;
+            }
+            return new NetworkWriter();
+        }
+
+        /// <summary>Return a writer to the pool for reuse.</summary>
+        public static void Return(NetworkWriter writer) {
+            if (writer == null) return;
+            writer._position = 0;
+            if (_pool.Count < MaxPoolSize)
+                _pool.Push(writer);
         }
 
         // ---- Output ----

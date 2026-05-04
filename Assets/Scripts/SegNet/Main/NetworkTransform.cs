@@ -25,7 +25,7 @@ namespace SegNet {
             Smooth = 2,
         }
 
-        private const ushort SyncTransformRpcId = 0x4E54; // "NT"
+        private const uint SyncTransformRpcId = 0x4E54; // "NT"
         private const byte PositionMask = 0x01;
         private const byte RotationMask = 0x02;
         private const byte ScaleMask = 0x04;
@@ -194,19 +194,21 @@ namespace SegNet {
         }
 
         private void SendTransformToServer() {
-            var writer = new NetworkWriter();
+            var writer = NetworkWriter.Get();
             WriteTransformPayload(writer);
 
             if (IsHost) {
                 ApplyClientTransformPayload(new NetworkReader(writer.ToArraySegment()));
+                NetworkWriter.Return(writer);
                 return;
             }
 
             SendRpcInternal(
                 SyncTransformRpcId,
                 RpcDirection.LocalClientToServer,
-                ChannelType.Reliable,
+                ChannelType.Unreliable,
                 writer);
+            NetworkWriter.Return(writer);
         }
 
         private static void DispatchSyncTransformRpc(NetworkBehaviour target, NetworkReader reader) {

@@ -31,6 +31,11 @@ namespace SegNet {
             new Dictionary<int, HSteamNetConnection>();
         private int _nextConnectionId = 1;
 
+        // Reusable scratch buffers to avoid per-frame allocations during Poll.
+        private readonly List<KeyValuePair<HSteamNetConnection, ConnectionId>> _pollSnapshot =
+            new List<KeyValuePair<HSteamNetConnection, ConnectionId>>();
+        private readonly IntPtr[] _msgPtrs = new IntPtr[256];
+
         public NetRole Role { get; private set; } = NetRole.None;
         public bool IsRunning { get; private set; }
         public int MaxPacketSize { get; private set; } = 1200;
@@ -136,7 +141,10 @@ namespace SegNet {
             if (!SteamManager.Initialized || !IsRunning)
                 return;
 
-            SteamAPI.RunCallbacks();
+            // NOTE: SteamAPI.RunCallbacks() is NOT called here — SteamManager.Update()
+            // owns the single per-frame callback dispatch. Calling it twice would let
+            // Steam callbacks (OnConnectionStatusChanged, lobby events) fire mid-Poll,
+            // mutating connection state while ReceiveAllMessages is in progress.
             ReceiveAllMessages();
         }
 
@@ -302,23 +310,33 @@ namespace SegNet {
         }
 
         private void ReceiveAllMessages() {
-            var msgPtrs = new IntPtr[256];
+            // Snapshot connections before iterating — OnData handlers (or Steam
+            // callbacks dispatched earlier in Poll) may call Disconnect() or trigger
+            // connection status changes that mutate _connToId mid-frame.
+            _pollSnapshot.Clear();
+            foreach (var kvp in _connToId)
+                _pollSnapshot.Add(kvp);
 
-            foreach (var kvp in _connToId) {
-                HSteamNetConnection hConn = kvp.Key;
-                ConnectionId id = kvp.Value;
+            for (int c = 0; c < _pollSnapshot.Count; c++) {
+                HSteamNetConnection hConn = _pollSnapshot[c].Key;
+                ConnectionId id = _pollSnapshot[c].Value;
+
+                // Connection may have been removed by an earlier OnData handler
+                // in this same frame — skip it.
+                if (!_connToId.ContainsKey(hConn))
+                    continue;
 
                 while (true) {
                     int msgCount = SteamNetworkingSockets.ReceiveMessagesOnConnection(
                         hConn,
-                        msgPtrs,
-                        msgPtrs.Length);
+                        _msgPtrs,
+                        _msgPtrs.Length);
 
                     if (msgCount <= 0)
                         break;
 
                     for (int i = 0; i < msgCount; i++) {
-                        IntPtr ptr = msgPtrs[i];
+                        IntPtr ptr = _msgPtrs[i];
                         if (ptr == IntPtr.Zero)
                             continue;
 

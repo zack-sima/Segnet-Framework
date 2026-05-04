@@ -30,6 +30,71 @@ NetworkManager.Instance.StartClient();
 NetworkManager.Instance.StartServer();
 NetworkManager.Instance.StopGame();
 
+## Sample NetworkManager script
+
+```
+using SegNet;
+using UnityEngine;
+
+public class NetworkManager : BaseNetworkManager {
+    [SerializeField] private GameObject playerPrefab;
+    [SerializeField] private Vector3 spawnOrigin = Vector3.zero;
+    [SerializeField] private float spawnSpacing = 2f;
+
+    protected override void Start() {
+        base.Start();
+
+        Application.targetFrameRate = 60;
+
+        if (ServerManager.Instance == null) {
+            Debug.LogError("[NetworkManager] ServerManager not found in scene.");
+            return;
+        }
+
+        ServerManager.Instance.OnPlayerJoined += HandlePlayerJoined;
+        ServerManager.Instance.OnClientDisconnected += HandleClientDisconnected;
+    }
+
+    protected override void OnDestroy() {
+        if (ServerManager.Instance != null) {
+            ServerManager.Instance.OnPlayerJoined -= HandlePlayerJoined;
+            ServerManager.Instance.OnClientDisconnected -= HandleClientDisconnected;
+        }
+
+        base.OnDestroy();
+    }
+
+    private void HandlePlayerJoined(NetworkPlayer player) {
+        var serverManager = ServerManager.Instance;
+        if (serverManager == null || !serverManager.IsServer) return;
+
+        if (playerPrefab == null) {
+            Debug.LogWarning("[NetworkManager] Sample player prefab is not assigned.");
+            return;
+        }
+
+        if (player == null || player.PrimaryBehaviour != null) {
+            Debug.LogWarning("[NetworkManager] Player is null or already has a primary behaviour.");
+            return;
+        }
+
+        Vector3 spawnPosition = spawnOrigin + new Vector3((player.PlayerId - 1) * spawnSpacing, 0f, 0f);
+        NetworkBehaviour spawned = ServerSpawn(playerPrefab, spawnPosition, Quaternion.identity, player);
+
+        if (spawned != null)
+            player.PrimaryBehaviour = spawned;
+    }
+
+    private void HandleClientDisconnected(ConnectionId connectionId, DisconnectReason reason) {
+        var serverManager = ServerManager.Instance;
+        if (serverManager == null || serverManager.State != NetworkState.Client) return;
+
+        Debug.LogWarning($"[NetworkManager] Host disconnected ({reason}). Returning to menu.");
+        StopGame();
+    }
+}
+```
+
 ## More
 
 Some notes:

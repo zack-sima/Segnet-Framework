@@ -918,8 +918,27 @@ namespace SegNet {
             if (type == typeof(NetworkPlayer))
                 return (writer, value) => writer.WriteNetworkPlayer((NetworkPlayer)(object)value);
 
-            if (type.IsEnum)
-                return (writer, value) => writer.WriteLong(Convert.ToInt64(value));
+            if (type.IsEnum) {
+                // Match the underlying primitive size so enum elements use the same
+                // byte count as they would in the RPC/weaver path (SerializerMap).
+                Type underlying = Enum.GetUnderlyingType(type);
+                if (underlying == typeof(byte))
+                    return (writer, value) => writer.WriteByte(Convert.ToByte(value));
+                if (underlying == typeof(sbyte))
+                    return (writer, value) => writer.WriteSByte(Convert.ToSByte(value));
+                if (underlying == typeof(short))
+                    return (writer, value) => writer.WriteShort(Convert.ToInt16(value));
+                if (underlying == typeof(ushort))
+                    return (writer, value) => writer.WriteUShort(Convert.ToUInt16(value));
+                if (underlying == typeof(uint))
+                    return (writer, value) => writer.WriteUInt(Convert.ToUInt32(value));
+                if (underlying == typeof(long))
+                    return (writer, value) => writer.WriteLong(Convert.ToInt64(value));
+                if (underlying == typeof(ulong))
+                    return (writer, value) => writer.WriteULong(Convert.ToUInt64(value));
+                // int is the most common underlying type; use as default.
+                return (writer, value) => writer.WriteInt(Convert.ToInt32(value));
+            }
 
             throw new NotSupportedException($"Sync collection element type '{type.FullName}' is not supported.");
         }
@@ -955,8 +974,24 @@ namespace SegNet {
             if (type == typeof(NetworkPlayer))
                 return reader => (T)(object)reader.ReadNetworkPlayer();
 
-            if (type.IsEnum)
-                return reader => (T)Enum.ToObject(type, reader.ReadLong());
+            if (type.IsEnum) {
+                Type underlying = Enum.GetUnderlyingType(type);
+                if (underlying == typeof(byte))
+                    return reader => (T)Enum.ToObject(type, reader.ReadByte());
+                if (underlying == typeof(sbyte))
+                    return reader => (T)Enum.ToObject(type, reader.ReadSByte());
+                if (underlying == typeof(short))
+                    return reader => (T)Enum.ToObject(type, reader.ReadShort());
+                if (underlying == typeof(ushort))
+                    return reader => (T)Enum.ToObject(type, reader.ReadUShort());
+                if (underlying == typeof(uint))
+                    return reader => (T)Enum.ToObject(type, reader.ReadUInt());
+                if (underlying == typeof(long))
+                    return reader => (T)Enum.ToObject(type, reader.ReadLong());
+                if (underlying == typeof(ulong))
+                    return reader => (T)Enum.ToObject(type, reader.ReadULong());
+                return reader => (T)Enum.ToObject(type, reader.ReadInt());
+            }
 
             throw new NotSupportedException($"Sync collection element type '{type.FullName}' is not supported.");
         }

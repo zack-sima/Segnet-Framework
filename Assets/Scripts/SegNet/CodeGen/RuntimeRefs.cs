@@ -41,8 +41,8 @@ namespace SegNet.CodeGen {
         public MethodReference NetworkWriterCtor { get; }       // NetworkWriter..ctor()
         public MethodReference NetworkWriterCtorCapacity { get; } // NetworkWriter..ctor(int)
 
-        public MethodReference SendRpcInternal { get; }         // NetworkBehaviour.SendRpcInternal(ushort, RpcDirection, ChannelType, NetworkWriter)
-        public MethodReference SendRpcInternalTo { get; }       // NetworkBehaviour.SendRpcInternalTo(ushort, ChannelType, NetworkWriter, NetworkPlayer)
+        public MethodReference SendRpcInternal { get; }         // NetworkBehaviour.SendRpcInternal(uint, RpcDirection, ChannelType, NetworkWriter)
+        public MethodReference SendRpcInternalTo { get; }       // NetworkBehaviour.SendRpcInternalTo(uint, ChannelType, NetworkWriter, NetworkPlayer)
         public MethodReference IsHostGetter { get; }
         public MethodReference IsClientGetter { get; }
         public MethodReference IsServerGetter { get; }
@@ -59,7 +59,7 @@ namespace SegNet.CodeGen {
         public MethodReference SyncCollectionDeserializeFull { get; } // SyncCollection.__SegNetDeserializeFull(NetworkReader)
         public MethodReference SyncCollectionDeserializeDelta { get; } // SyncCollection.__SegNetDeserializeDelta(NetworkReader)
 
-        public MethodReference RpcRegistryRegister { get; }     // RpcRegistry.Register(ushort, Action<NetworkBehaviour, NetworkReader>)
+        public MethodReference RpcRegistryRegister { get; }     // RpcRegistry.Register(uint, Action<NetworkBehaviour, NetworkReader>)
 
         // ---- mscorlib / netstandard ----
 
@@ -140,15 +140,15 @@ namespace SegNet.CodeGen {
 
             // ---- NetworkBehaviour entry points ----
             var sendRpcDef = FindMethod(nbDef, "SendRpcInternal",
-                "System.UInt16", "SegNet.RpcDirection", "SegNet.ChannelType", "SegNet.NetworkWriter")
+                "System.UInt32", "SegNet.RpcDirection", "SegNet.ChannelType", "SegNet.NetworkWriter")
                 ?? throw new InvalidOperationException(
-                    "NetworkBehaviour.SendRpcInternal(ushort, RpcDirection, ChannelType, NetworkWriter) not found");
+                    "NetworkBehaviour.SendRpcInternal(uint, RpcDirection, ChannelType, NetworkWriter) not found");
             SendRpcInternal = module.ImportReference(sendRpcDef);
 
             var sendRpcToDef = FindMethod(nbDef, "SendRpcInternalTo",
-                "System.UInt16", "SegNet.ChannelType", "SegNet.NetworkWriter", "SegNet.NetworkPlayer")
+                "System.UInt32", "SegNet.ChannelType", "SegNet.NetworkWriter", "SegNet.NetworkPlayer")
                 ?? throw new InvalidOperationException(
-                    "NetworkBehaviour.SendRpcInternalTo(ushort, ChannelType, NetworkWriter, NetworkPlayer) not found");
+                    "NetworkBehaviour.SendRpcInternalTo(uint, ChannelType, NetworkWriter, NetworkPlayer) not found");
             SendRpcInternalTo = module.ImportReference(sendRpcToDef);
 
             IsHostGetter = module.ImportReference(GetPropertyGetterOrThrow(nbDef, "IsHost"));
@@ -240,7 +240,7 @@ namespace SegNet.CodeGen {
                 ExplicitThis = false,
                 CallingConvention = MethodCallingConvention.Default,
             };
-            registerRef.Parameters.Add(new ParameterDefinition(module.TypeSystem.UInt16));
+            registerRef.Parameters.Add(new ParameterDefinition(module.TypeSystem.UInt32));
             registerRef.Parameters.Add(new ParameterDefinition(actionInstance));
             RpcRegistryRegister = registerRef;
 

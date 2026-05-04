@@ -402,16 +402,17 @@ namespace SegNet {
                 NetworkStream stream = client.GetStream();
                 int len = payload.Count + 1;
 
-                byte[] header = new byte[4];
-                header[0] = (byte)len;
-                header[1] = (byte)(len >> 8);
-                header[2] = (byte)(len >> 16);
-                header[3] = (byte)(len >> 24);
-
-                stream.Write(header, 0, 4);
-                stream.WriteByte(frameType);
+                // Single write to avoid multiple TCP segments with NoDelay enabled.
+                byte[] packet = new byte[4 + 1 + payload.Count];
+                packet[0] = (byte)len;
+                packet[1] = (byte)(len >> 8);
+                packet[2] = (byte)(len >> 16);
+                packet[3] = (byte)(len >> 24);
+                packet[4] = frameType;
                 if (payload.Count > 0)
-                    stream.Write(payload.Array, payload.Offset, payload.Count);
+                    Buffer.BlockCopy(payload.Array, payload.Offset, packet, 5, payload.Count);
+
+                stream.Write(packet, 0, packet.Length);
             } catch (Exception ex) {
                 Debug.LogWarning($"[LocalTransport] TCP send error: {ex.Message}");
             }

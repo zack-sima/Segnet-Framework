@@ -48,15 +48,15 @@ namespace SegNet {
         /// On a pure client this is the single connection to the server. Used by the
         /// RPC send path to address ClientToServer messages. Invalid when running as
         /// Server, Host, or Offline (host has no network self-loop).
+        /// Cached on connect to avoid HashSet iteration / enumerator allocation.
         /// </summary>
         public ConnectionId ServerConnection {
             get {
                 if (State != NetworkState.Client) return ConnectionId.Invalid;
-                foreach (var conn in connectionManager.Connections)
-                    return conn;
-                return ConnectionId.Invalid;
+                return _cachedServerConnection;
             }
         }
+        private ConnectionId _cachedServerConnection = ConnectionId.Invalid;
 
         // ---- Player registries ----
 
@@ -80,6 +80,17 @@ namespace SegNet {
 
         /// <summary>All networked objects (runtime + scene) keyed by NetworkId.</summary>
         internal IReadOnlyDictionary<uint, NetworkBehaviour> NetworkedObjects => _networkedObjects;
+
+        /// <summary>
+        /// Behaviours that called SetDirty() since last flush. ProcessDirtyObjects
+        /// iterates this instead of scanning every networked object — O(dirty) not O(total).
+        /// </summary>
+        private readonly HashSet<NetworkBehaviour> _dirtyBehaviours = new HashSet<NetworkBehaviour>();
+
+        /// <summary>Called by NetworkBehaviour.SetDirty() to register for next flush.</summary>
+        internal void MarkBehaviourDirty(NetworkBehaviour b) {
+            _dirtyBehaviours.Add(b);
+        }
 
         // ---- Framework callbacks ----
 
@@ -229,6 +240,8 @@ namespace SegNet {
             _nextNetworkId = 1;
             _nextPlayerId = 1;
             _nextHeartbeatAt = 0f;
+            _cachedServerConnection = ConnectionId.Invalid;
+            _dirtyBehaviours.Clear();
             _incomingRpcRateLimits.Clear();
 
             Debug.Log($"[ServerManager] Stopped (was {previousState}).");
@@ -320,6 +333,11 @@ namespace SegNet {
 
         private void HandleClientConnected(ConnectionId connId) {
             Debug.Log($"[ServerManager] Client connected: {connId}");
+
+            // Cache for client-side ServerConnection property (avoids HashSet iteration).
+            if (State == NetworkState.Client)
+                _cachedServerConnection = connId;
+
             OnClientConnected?.Invoke(connId);
 
             if (!IsServer) return;
@@ -345,6 +363,10 @@ namespace SegNet {
 
         private void HandleClientDisconnected(ConnectionId connId, DisconnectReason reason) {
             Debug.Log($"[ServerManager] Client disconnected: {connId} ({reason})");
+
+            if (connId == _cachedServerConnection)
+                _cachedServerConnection = ConnectionId.Invalid;
+
             OnClientDisconnected?.Invoke(connId, reason);
             _incomingRpcRateLimits.Remove(connId);
 
@@ -382,7 +404,7 @@ namespace SegNet {
                 var behaviour = kvp.Value;
                 if (behaviour == null || behaviour.IsSpawned) continue;
 
-                uint nid = _nextNetworkId++;
+                uint nid = AllocNetworkId();
                 behaviour.NetworkId = nid;
                 behaviour.PrefabId = 0;
                 behaviour.ComponentIndex = 0;
@@ -429,7 +451,7 @@ namespace SegNet {
                 return null;
             }
 
-            uint nid = _nextNetworkId++;
+            uint nid = AllocNetworkId();
             var root = behaviours[0];
             root.AllBehaviours = behaviours;
 
@@ -471,9 +493,10 @@ namespace SegNet {
 
             // Notify clients
             if (sendMessage) {
-                var writer = new NetworkWriter();
+                var writer = NetworkWriter.Get();
                 writer.WriteUInt(nid);
                 Messages.Broadcast(NetworkMessageType.Despawn, writer);
+                NetworkWriter.Return(writer);
             }
 
             // Callbacks
@@ -508,13 +531,25 @@ namespace SegNet {
         // ==================================================================
 
         private void ProcessDirtyObjects(float nowSeconds) {
+            // Reliable dirty flush — O(dirty) via the dirty set instead of O(total).
+            if (_dirtyBehaviours.Count > 0) {
+                foreach (var b in _dirtyBehaviours) {
+                    if (b == null || !b.IsSpawned) continue;
+                    if (b.ConsumeDirty()) {
+                        var root = b.Root ?? b;
+                        SendStateUpdateToAll(root.NetworkId, b.ComponentIndex, b);
+                    }
+                }
+                _dirtyBehaviours.Clear();
+            }
+
+            // Unreliable still needs full scan (only objects overriding
+            // ShouldSerializeUnreliable do work; the base returns false).
             foreach (var kvp in _networkedObjects) {
                 var root = kvp.Value;
                 if (root == null || root.AllBehaviours == null) continue;
 
                 foreach (var b in root.AllBehaviours) {
-                    if (b != null && b.ConsumeDirty())
-                        SendStateUpdateToAll(root.NetworkId, b.ComponentIndex, b);
                     if (b != null && b.ShouldSerializeUnreliable(nowSeconds))
                         SendUnreliableStateUpdateToAll(root.NetworkId, b.ComponentIndex, b, nowSeconds);
                 }
@@ -526,9 +561,10 @@ namespace SegNet {
         // ==================================================================
 
         private void SendSpawnTo(ConnectionId target, NetworkBehaviour root) {
-            var writer = new NetworkWriter(256);
+            var writer = NetworkWriter.Get();
             WriteSpawnMessage(writer, root);
             Messages.Send(target, NetworkMessageType.Spawn, writer);
+            NetworkWriter.Return(writer);
         }
 
         private void WriteSpawnMessage(NetworkWriter writer, NetworkBehaviour root) {
@@ -548,54 +584,60 @@ namespace SegNet {
             var behaviours = root.AllBehaviours ?? new[] { root };
             writer.WriteUShort((ushort)behaviours.Length);
             foreach (var b in behaviours) {
-                var stateWriter = new NetworkWriter();
+                var stateWriter = NetworkWriter.Get();
                 b.OnSerialize(stateWriter, true);
                 var seg = stateWriter.ToArraySegment();
                 writer.WriteUShort((ushort)seg.Count);
                 if (seg.Count > 0)
                     writer.WriteRawBytes(seg);
+                NetworkWriter.Return(stateWriter);
             }
         }
 
         private void SendStateUpdateToAll(uint networkId, int componentIndex, NetworkBehaviour behaviour) {
-            var writer = new NetworkWriter();
+            var writer = NetworkWriter.Get();
             writer.WriteUInt(networkId);
             writer.WriteUShort((ushort)componentIndex);
             behaviour.OnSerialize(writer, false);
             Messages.Broadcast(NetworkMessageType.StateUpdate, writer);
+            NetworkWriter.Return(writer);
         }
 
         private void SendUnreliableStateUpdateToAll(
             uint networkId, int componentIndex, NetworkBehaviour behaviour, float nowSeconds) {
 
-            var writer = new NetworkWriter();
+            var writer = NetworkWriter.Get();
             writer.WriteUInt(networkId);
             writer.WriteUShort((ushort)componentIndex);
             writer.WriteUShort(behaviour.NextUnreliableSequence++);
             behaviour.OnSerializeUnreliable(writer, nowSeconds);
             Messages.Broadcast(NetworkMessageType.UnreliableStateUpdate, writer, ChannelType.Unreliable);
+            NetworkWriter.Return(writer);
         }
 
         private void SendPlayerJoined(ConnectionId target, NetworkPlayer player, bool isYou) {
-            var writer = new NetworkWriter();
+            var writer = NetworkWriter.Get();
             writer.WriteInt(player.PlayerId);
             writer.WriteBool(isYou);
             writer.WriteBool(player.IsHost);
             Messages.Send(target, NetworkMessageType.PlayerJoined, writer);
+            NetworkWriter.Return(writer);
         }
 
         private void BroadcastPlayerJoinedExcept(ConnectionId exclude, NetworkPlayer player) {
-            var writer = new NetworkWriter();
+            var writer = NetworkWriter.Get();
             writer.WriteInt(player.PlayerId);
             writer.WriteBool(false);
             writer.WriteBool(player.IsHost);
             Messages.BroadcastExcept(exclude, NetworkMessageType.PlayerJoined, writer);
+            NetworkWriter.Return(writer);
         }
 
         private void BroadcastPlayerLeft(int playerId) {
-            var writer = new NetworkWriter();
+            var writer = NetworkWriter.Get();
             writer.WriteInt(playerId);
             Messages.Broadcast(NetworkMessageType.PlayerLeft, writer);
+            NetworkWriter.Return(writer);
         }
 
         // ==================================================================
@@ -822,7 +864,7 @@ namespace SegNet {
         //
         // Wire format (after the NetworkMessageType.RPC header has already been stripped
         // by MessageDispatcher):
-        //   [uint networkId][ushort componentIndex][ushort rpcId][ushort argLen][argBytes...]
+        //   [uint networkId][ushort componentIndex][uint rpcId][ushort argLen][argBytes...]
         //
         // The same handler runs on both server and client. The direction of the RPC is
         // implicit in the registered dispatch handler — the woven send path only emits
@@ -835,12 +877,12 @@ namespace SegNet {
         private void OnMsg_Rpc(ConnectionId from, NetworkReader reader) {
             uint networkId;
             ushort componentIndex;
-            ushort rpcId;
+            uint rpcId;
             ushort argLen;
             try {
                 networkId = reader.ReadUInt();
                 componentIndex = reader.ReadUShort();
-                rpcId = reader.ReadUShort();
+                rpcId = reader.ReadUInt();
                 argLen = reader.ReadUShort();
             } catch (Exception ex) {
                 Debug.LogWarning($"[ServerManager] RPC header malformed from {from}: {ex.Message}");
@@ -854,21 +896,21 @@ namespace SegNet {
 
             if (!_networkedObjects.TryGetValue(networkId, out var root) || root == null) {
                 Debug.LogWarning(
-                    $"[ServerManager] RPC 0x{rpcId:X4}: target networkId {networkId} not found.");
+                    $"[ServerManager] RPC 0x{rpcId:X8}: target networkId {networkId} not found.");
                 return;
             }
 
             var behaviours = root.AllBehaviours ?? new[] { root };
             if (componentIndex >= behaviours.Length) {
                 Debug.LogWarning(
-                    $"[ServerManager] RPC 0x{rpcId:X4}: componentIndex {componentIndex} out of range " +
+                    $"[ServerManager] RPC 0x{rpcId:X8}: componentIndex {componentIndex} out of range " +
                     $"(behaviours.Length={behaviours.Length}).");
                 return;
             }
 
             var target = behaviours[componentIndex];
             if (target == null) {
-                Debug.LogWarning($"[ServerManager] RPC 0x{rpcId:X4}: target behaviour is null.");
+                Debug.LogWarning($"[ServerManager] RPC 0x{rpcId:X8}: target behaviour is null.");
                 return;
             }
 
@@ -877,12 +919,12 @@ namespace SegNet {
             if (IsServer) {
                 if (!_connectionToPlayer.TryGetValue(from, out var senderPlayer)) {
                     Debug.LogWarning(
-                        $"[ServerManager] RPC 0x{rpcId:X4} from unknown connection {from}; rejected.");
+                        $"[ServerManager] RPC 0x{rpcId:X8} from unknown connection {from}; rejected.");
                     return;
                 }
                 if (target.OwnerPlayer != senderPlayer) {
                     Debug.LogWarning(
-                        $"[ServerManager] RPC 0x{rpcId:X4} from player {senderPlayer.PlayerId} " +
+                        $"[ServerManager] RPC 0x{rpcId:X8} from player {senderPlayer.PlayerId} " +
                         $"on object owned by " +
                         $"{(target.OwnerPlayer != null ? "player " + target.OwnerPlayer.PlayerId : "world")}; " +
                         "rejected.");
@@ -892,7 +934,7 @@ namespace SegNet {
 
             if (!RpcRegistry.TryGetHandler(rpcId, out var handler)) {
                 Debug.LogWarning(
-                    $"[ServerManager] RPC 0x{rpcId:X4}: no handler registered. " +
+                    $"[ServerManager] RPC 0x{rpcId:X8}: no handler registered. " +
                     "Either the IL weaver hasn't run yet, or this rpcId is unknown.");
                 return;
             }
@@ -902,7 +944,7 @@ namespace SegNet {
                 handler(target, argReader);
             } catch (Exception ex) {
                 Debug.LogError(
-                    $"[ServerManager] RPC 0x{rpcId:X4} on '{target.name}' threw: {ex}");
+                    $"[ServerManager] RPC 0x{rpcId:X8} on '{target.name}' threw: {ex}");
             }
         }
 
@@ -1005,6 +1047,26 @@ namespace SegNet {
         }
 
         // ==================================================================
+        //  ID allocation
+        // ==================================================================
+
+        /// <summary>
+        /// Allocate the next NetworkId. Skips 0 (null sentinel) on uint wraparound.
+        /// In practice 4 billion spawns is unreachable, but the guard is free.
+        /// </summary>
+        private uint AllocNetworkId() {
+            uint nid = _nextNetworkId++;
+            if (nid == 0) {
+                // Wrapped from uint.MaxValue → 0; skip the null sentinel.
+                nid = _nextNetworkId++;
+                Debug.LogError(
+                    "[ServerManager] NetworkId counter wrapped around 0 (4B+ spawns). " +
+                    "IDs may now collide with still-active objects.");
+            }
+            return nid;
+        }
+
+        // ==================================================================
         //  Validation
         // ==================================================================
 
@@ -1028,8 +1090,9 @@ namespace SegNet {
             if (connectionManager == null || connectionManager.Connections.Count == 0)
                 return;
 
-            var writer = new NetworkWriter();
+            var writer = NetworkWriter.Get();
             Messages.Broadcast(NetworkMessageType.Heartbeat, writer);
+            NetworkWriter.Return(writer);
         }
     }
 }

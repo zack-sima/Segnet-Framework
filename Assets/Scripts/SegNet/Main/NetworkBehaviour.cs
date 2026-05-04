@@ -132,8 +132,10 @@ namespace SegNet {
 
         /// <summary>Mark this behaviour as needing a state update sent to clients.</summary>
         public void SetDirty() {
-            if (IsServer && IsSpawned)
+            if (IsServer && IsSpawned) {
                 _dirty = true;
+                ServerManager.Instance?.MarkBehaviourDirty(this);
+            }
         }
 
         internal bool ConsumeDirty() {
@@ -206,9 +208,9 @@ namespace SegNet {
         //
         // Wire format of the payload built here (the NetworkMessageType.RPC header is
         // prepended by MessageDispatcher.Send/Broadcast):
-        //   [uint networkId][ushort componentIndex][ushort rpcId][ushort argLen][argBytes...]
+        //   [uint networkId][ushort componentIndex][uint rpcId][ushort argLen][argBytes...]
 
-        protected void SendRpcInternal(ushort rpcId, RpcDirection direction,
+        protected void SendRpcInternal(uint rpcId, RpcDirection direction,
             ChannelType channel, NetworkWriter args) {
 
             var sm = ServerManager.Instance;
@@ -222,15 +224,17 @@ namespace SegNet {
                 case RpcDirection.LocalClientToServer: {
                         if (!sm.IsClient) {
                             Debug.LogWarning(
-                                $"[NetworkBehaviour] ClientToServer RPC 0x{rpcId:X4} called " +
+                                $"[NetworkBehaviour] ClientToServer RPC 0x{rpcId:X8} called " +
                                 "but not running as client.");
+                            NetworkWriter.Return(payload);
                             return;
                         }
                         var serverConn = sm.ServerConnection;
                         if (serverConn == ConnectionId.Invalid) {
                             Debug.LogWarning(
-                                $"[NetworkBehaviour] ClientToServer RPC 0x{rpcId:X4}: " +
+                                $"[NetworkBehaviour] ClientToServer RPC 0x{rpcId:X8}: " +
                                 "no server connection.");
+                            NetworkWriter.Return(payload);
                             return;
                         }
                         sm.Messages.Send(serverConn, NetworkMessageType.RPC, payload, channel);
@@ -240,8 +244,9 @@ namespace SegNet {
                 case RpcDirection.ServerToClients: {
                         if (!sm.IsServer) {
                             Debug.LogWarning(
-                                $"[NetworkBehaviour] ServerToClients RPC 0x{rpcId:X4} called " +
+                                $"[NetworkBehaviour] ServerToClients RPC 0x{rpcId:X8} called " +
                                 "but not running as server.");
+                            NetworkWriter.Return(payload);
                             return;
                         }
                         sm.Messages.Broadcast(NetworkMessageType.RPC, payload, channel);
@@ -250,10 +255,13 @@ namespace SegNet {
 
                 case RpcDirection.ServerToClient:
                     Debug.LogError(
-                        $"[NetworkBehaviour] ServerToClient RPC 0x{rpcId:X4}: " +
+                        $"[NetworkBehaviour] ServerToClient RPC 0x{rpcId:X8}: " +
                         "weaver should have routed this through SendRpcInternalTo.");
-                    break;
+                    NetworkWriter.Return(payload);
+                    return;
             }
+
+            NetworkWriter.Return(payload);
         }
 
         /// <summary>
@@ -263,7 +271,7 @@ namespace SegNet {
         /// The host shortcut (target == local host player) is handled in the wrapper, so
         /// by the time we get here we expect a remote target with a valid ConnectionId.
         /// </summary>
-        protected void SendRpcInternalTo(ushort rpcId, ChannelType channel,
+        protected void SendRpcInternalTo(uint rpcId, ChannelType channel,
             NetworkWriter args, NetworkPlayer target) {
 
             var sm = ServerManager.Instance;
@@ -271,18 +279,18 @@ namespace SegNet {
 
             if (!sm.IsServer) {
                 Debug.LogWarning(
-                    $"[NetworkBehaviour] ServerToClient RPC 0x{rpcId:X4} called " +
+                    $"[NetworkBehaviour] ServerToClient RPC 0x{rpcId:X8} called " +
                     "but not running as server.");
                 return;
             }
             if (target == null) {
                 Debug.LogWarning(
-                    $"[NetworkBehaviour] ServerToClient RPC 0x{rpcId:X4}: target is null.");
+                    $"[NetworkBehaviour] ServerToClient RPC 0x{rpcId:X8}: target is null.");
                 return;
             }
             if (target.ConnectionId == ConnectionId.Invalid) {
                 Debug.LogWarning(
-                    $"[NetworkBehaviour] ServerToClient RPC 0x{rpcId:X4}: target player " +
+                    $"[NetworkBehaviour] ServerToClient RPC 0x{rpcId:X8}: target player " +
                     $"P{target.PlayerId} has no connection (host self-target should have been " +
                     "handled by the wrapper).");
                 return;
@@ -291,18 +299,19 @@ namespace SegNet {
             var payload = BuildRpcPayload(rpcId, args);
             if (payload == null) return;
             sm.Messages.Send(target.ConnectionId, NetworkMessageType.RPC, payload, channel);
+            NetworkWriter.Return(payload);
         }
 
         /// <summary>Common preconditions for any RPC send. Logs and returns false on failure.</summary>
-        private bool CanSendRpc(ServerManager sm, ushort rpcId) {
+        private bool CanSendRpc(ServerManager sm, uint rpcId) {
             if (sm == null || !sm.IsOnline) {
                 Debug.LogWarning(
-                    $"[NetworkBehaviour] Cannot send RPC 0x{rpcId:X4}: ServerManager offline.");
+                    $"[NetworkBehaviour] Cannot send RPC 0x{rpcId:X8}: ServerManager offline.");
                 return false;
             }
             if (!IsSpawned) {
                 Debug.LogWarning(
-                    $"[NetworkBehaviour] Cannot send RPC 0x{rpcId:X4} on '{name}': not spawned.");
+                    $"[NetworkBehaviour] Cannot send RPC 0x{rpcId:X8} on '{name}': not spawned.");
                 return false;
             }
             return true;
@@ -312,11 +321,11 @@ namespace SegNet {
         /// Build the framed RPC payload (the NetworkMessageType.RPC header is added later
         /// by MessageDispatcher). Returns null on overflow.
         /// </summary>
-        private NetworkWriter BuildRpcPayload(ushort rpcId, NetworkWriter args) {
-            var payload = new NetworkWriter(64);
+        private NetworkWriter BuildRpcPayload(uint rpcId, NetworkWriter args) {
+            var payload = NetworkWriter.Get();
             payload.WriteUInt(NetworkId);
             payload.WriteUShort((ushort)ComponentIndex);
-            payload.WriteUShort(rpcId);
+            payload.WriteUInt(rpcId);
 
             ArraySegment<byte> argSeg = args != null
                 ? args.ToArraySegment()
@@ -324,7 +333,7 @@ namespace SegNet {
 
             if (argSeg.Count > ushort.MaxValue) {
                 Debug.LogError(
-                    $"[NetworkBehaviour] RPC 0x{rpcId:X4} arg payload {argSeg.Count} bytes " +
+                    $"[NetworkBehaviour] RPC 0x{rpcId:X8} arg payload {argSeg.Count} bytes " +
                     $"exceeds ushort max ({ushort.MaxValue}).");
                 return null;
             }

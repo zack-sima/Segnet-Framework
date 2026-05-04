@@ -127,6 +127,7 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: 
   isSceneObject: 0
+  testString: 
 --- !u!114 &-7987312619881737441
 MonoBehaviour:
   m_ObjectHideFlags: 0

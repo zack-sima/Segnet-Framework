@@ -12,7 +12,7 @@ namespace SegNet.CodeGen {
     ///
     /// For each [Rpc] method <c>Foo</c>, this:
     ///   1. Validates the signature (void return, instance, non-generic, all params serializable).
-    ///   2. Computes a stable ushort rpcId via FNV-1a of the qualified signature.
+    ///   2. Computes a stable uint rpcId via FNV-1a of the qualified signature.
     ///   3. Clones the original body into a new <c>__SegNetRpcImpl_Foo_XXXX</c> method (XXXX = rpcId hex,
     ///      so overloads of the same name produce distinct impl method names).
     ///   4. Replaces the original body with a wrapper:
@@ -46,8 +46,8 @@ namespace SegNet.CodeGen {
         private readonly List<DiagnosticMessage> _diagnostics;
 
         // Per-type accumulator: rpcId → dispatch handler. Drained by EmitRegistrationMethod.
-        private readonly List<(ushort rpcId, MethodDefinition dispatch)> _pendingRegistrations =
-            new List<(ushort, MethodDefinition)>();
+        private readonly List<(uint rpcId, MethodDefinition dispatch)> _pendingRegistrations =
+            new List<(uint, MethodDefinition)>();
 
         public RpcWeaver(RuntimeRefs refs, SerializerMap serializers,
             List<DiagnosticMessage> diagnostics) {
@@ -83,7 +83,7 @@ namespace SegNet.CodeGen {
             int directionVal = (int)attr.ConstructorArguments[0].Value;
             int channelVal = ReadChannelArg(attr); // defaults to 0 (Reliable) if not specified
 
-            ushort rpcId = ComputeRpcId(rpcMethod);
+            uint rpcId = ComputeRpcId(rpcMethod);
 
             // 1. Move original body to impl method (name includes rpcId for overload uniqueness).
             MethodDefinition implMethod = MoveBodyToImpl(declaringType, rpcMethod, rpcId);
@@ -96,7 +96,7 @@ namespace SegNet.CodeGen {
 
             _pendingRegistrations.Add((rpcId, dispatch));
 
-            Info($"[SegNet ILPP] Wove [Rpc] {rpcMethod.FullName} → id 0x{rpcId:X4}");
+            Info($"[SegNet ILPP] Wove [Rpc] {rpcMethod.FullName} → id 0x{rpcId:X8}");
             return true;
         }
 
@@ -138,7 +138,7 @@ namespace SegNet.CodeGen {
             var il = reg.Body.GetILProcessor();
             foreach (var (rpcId, dispatch) in _pendingRegistrations) {
                 // RpcRegistry.Register(rpcId, new Action<NetworkBehaviour, NetworkReader>(dispatch));
-                il.Emit(OpCodes.Ldc_I4, (int)rpcId);
+                il.Emit(OpCodes.Ldc_I4, unchecked((int)rpcId));
                 il.Emit(OpCodes.Ldnull);
                 il.Emit(OpCodes.Ldftn, dispatch);
                 il.Emit(OpCodes.Newobj, _refs.DispatchActionCtor);
@@ -188,7 +188,7 @@ namespace SegNet.CodeGen {
 
             // Sanity: detect re-entry (the weaver already ran on this assembly). Re-entry is
             // diagnosed by checking for an existing impl method with the rpcId suffix.
-            string implName = ImplPrefix + method.Name + "_" + ComputeRpcId(method).ToString("X4");
+            string implName = ImplPrefix + method.Name + "_" + ComputeRpcId(method).ToString("X8");
             foreach (var m in declaringType.Methods) {
                 if (m.Name == implName) {
                     Error(method,
@@ -202,10 +202,10 @@ namespace SegNet.CodeGen {
         }
 
         // ----------------------------------------------------------------
-        //  Step 1: hash → ushort rpcId
+        //  Step 1: hash → uint rpcId (32-bit FNV-1a)
         // ----------------------------------------------------------------
 
-        private static ushort ComputeRpcId(MethodDefinition method) {
+        private static uint ComputeRpcId(MethodDefinition method) {
             var sb = new StringBuilder();
             sb.Append(method.DeclaringType.FullName);
             sb.Append("::");
@@ -216,10 +216,10 @@ namespace SegNet.CodeGen {
                 sb.Append(method.Parameters[i].ParameterType.FullName);
             }
             sb.Append(')');
-            return Fnv1a16(sb.ToString());
+            return Fnv1a32(sb.ToString());
         }
 
-        private static ushort Fnv1a16(string s) {
+        private static uint Fnv1a32(string s) {
             const uint offset = 2166136261u;
             const uint prime = 16777619u;
             uint hash = offset;
@@ -227,7 +227,7 @@ namespace SegNet.CodeGen {
                 hash ^= (byte)s[i];
                 hash *= prime;
             }
-            return (ushort)((hash >> 16) ^ (hash & 0xFFFF));
+            return hash;
         }
 
         // ----------------------------------------------------------------
@@ -235,12 +235,12 @@ namespace SegNet.CodeGen {
         // ----------------------------------------------------------------
 
         private MethodDefinition MoveBodyToImpl(
-            TypeDefinition declaringType, MethodDefinition original, ushort rpcId) {
+            TypeDefinition declaringType, MethodDefinition original, uint rpcId) {
             // Create the impl method with identical signature (private so it never appears
             // in IntelliSense and can't be called from user code). The rpcId hex suffix
             // disambiguates overloads (same method name, different param signatures).
             var impl = new MethodDefinition(
-                ImplPrefix + original.Name + "_" + rpcId.ToString("X4"),
+                ImplPrefix + original.Name + "_" + rpcId.ToString("X8"),
                 MethodAttributes.Private | MethodAttributes.HideBySig,
                 original.ReturnType);
 
@@ -264,7 +264,7 @@ namespace SegNet.CodeGen {
         private void WriteWrapperBody(
             MethodDefinition wrapper,
             MethodDefinition impl,
-            ushort rpcId,
+            uint rpcId,
             int directionVal,
             int channelVal) {
 
@@ -305,7 +305,7 @@ namespace SegNet.CodeGen {
             MethodDefinition wrapper,
             MethodDefinition impl,
             VariableDefinition writerLocal,
-            ushort rpcId,
+            uint rpcId,
             int channelVal,
             bool ownerCheck) {
 
@@ -381,7 +381,7 @@ namespace SegNet.CodeGen {
             MethodDefinition wrapper,
             MethodDefinition impl,
             VariableDefinition writerLocal,
-            ushort rpcId,
+            uint rpcId,
             int channelVal) {
 
             // if (!this.IsServer) return;
@@ -428,7 +428,7 @@ namespace SegNet.CodeGen {
 
             // this.SendRpcInternalTo(rpcId, channel, w, owner);
             il.Emit(OpCodes.Ldarg_0);                       // this
-            il.Emit(OpCodes.Ldc_I4, (int)rpcId);            // rpcId
+            il.Emit(OpCodes.Ldc_I4, unchecked((int)rpcId)); // rpcId
             il.Emit(OpCodes.Ldc_I4, channelVal);            // channel
             il.Emit(OpCodes.Ldloc, writerLocal);            // writer
             il.Emit(OpCodes.Ldloc, ownerLocal);             // target
@@ -441,7 +441,7 @@ namespace SegNet.CodeGen {
             MethodDefinition wrapper,
             MethodDefinition impl,
             VariableDefinition writerLocal,
-            ushort rpcId,
+            uint rpcId,
             int channelVal) {
 
             // if (!this.IsServer) return;
@@ -505,14 +505,14 @@ namespace SegNet.CodeGen {
         }
 
         /// <summary>
-        /// Emit: this.SendRpcInternal((ushort)rpcId, (RpcDirection)dirVal, (ChannelType)channelVal, writer);
+        /// Emit: this.SendRpcInternal((uint)rpcId, (RpcDirection)dirVal, (ChannelType)channelVal, writer);
         /// </summary>
         private void EmitSendRpcInternal(
             ILProcessor il, VariableDefinition writerLocal,
-            ushort rpcId, int directionVal, int channelVal) {
+            uint rpcId, int directionVal, int channelVal) {
 
             il.Emit(OpCodes.Ldarg_0);                       // this
-            il.Emit(OpCodes.Ldc_I4, (int)rpcId);            // rpcId (uint16 promoted to int32 on stack)
+            il.Emit(OpCodes.Ldc_I4, unchecked((int)rpcId)); // rpcId (uint32 as int32 — same bit pattern)
             il.Emit(OpCodes.Ldc_I4, directionVal);          // direction enum
             il.Emit(OpCodes.Ldc_I4, channelVal);            // channel enum
             il.Emit(OpCodes.Ldloc, writerLocal);            // writer
@@ -527,10 +527,10 @@ namespace SegNet.CodeGen {
             TypeDefinition declaringType,
             MethodDefinition wrapper,
             MethodDefinition impl,
-            ushort rpcId) {
+            uint rpcId) {
 
             var dispatch = new MethodDefinition(
-                DispatchPrefix + wrapper.Name + "_" + rpcId.ToString("X4"),
+                DispatchPrefix + wrapper.Name + "_" + rpcId.ToString("X8"),
                 MethodAttributes.Private | MethodAttributes.Static | MethodAttributes.HideBySig,
                 _refs.VoidType);
 
