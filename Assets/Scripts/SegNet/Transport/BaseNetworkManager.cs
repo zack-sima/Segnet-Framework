@@ -206,7 +206,13 @@ namespace SegNet {
 
             NetworkSceneManager.Instance?.ClearSceneObjects();
 
-            if (!string.IsNullOrWhiteSpace(gameScene) &&
+            //if both are white space/null, load this current scene again
+            if (string.IsNullOrWhiteSpace(gameScene) &&
+                string.IsNullOrWhiteSpace(menuScene)) {
+                string scene = SceneManager.GetActiveScene().name;
+                yield return SceneManager.LoadSceneAsync(scene);
+
+            } else if (!string.IsNullOrWhiteSpace(gameScene) &&
                 SceneManager.GetActiveScene().name != gameScene) {
                 yield return SceneManager.LoadSceneAsync(gameScene);
             }
