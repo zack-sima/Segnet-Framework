@@ -228,6 +228,7 @@ namespace SegNet {
                 yield return SceneManager.LoadSceneAsync(gameScene);
             }
 
+            yield return WaitForSceneInitialization();
             StartRequestedSession(targetState);
             _isTransitioning = false;
         }
@@ -280,9 +281,15 @@ namespace SegNet {
                 yield break;
 
             _isTransitioning = true;
-            yield return null;
+            yield return WaitForSceneInitialization();
             StartRequestedSession(targetState);
             _isTransitioning = false;
+        }
+
+        private static IEnumerator WaitForSceneInitialization() {
+            // After a scene load/reload, wait one frame so scene-scoped singletons have
+            // completed Awake/OnEnable/Start before OnStarted can fire synchronously.
+            yield return null;
         }
 
         private void StartRequestedSession(NetworkState targetState) {
