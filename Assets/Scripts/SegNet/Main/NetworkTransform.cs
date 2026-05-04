@@ -1,3 +1,4 @@
+using System;
 using UnityEngine;
 
 namespace SegNet {
@@ -81,6 +82,14 @@ namespace SegNet {
         private Quaternion _authoritativeRotation;
         private Vector3 _authoritativeScale;
 
+        /// <summary>
+        /// Optional server-side callback for validating owner-submitted positions in
+        /// LocalClientToServer mode. Return true to accept the sampled position, or
+        /// false to reject it and let the normal server correction path rubber-band
+        /// the owner back later.
+        /// </summary>
+        public Func<Vector3, bool> PositionValidator { get; private set; }
+
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
         private static void RegisterRpcHandler() {
             RpcRegistry.Register(SyncTransformRpcId, DispatchSyncTransformRpc);
@@ -99,6 +108,14 @@ namespace SegNet {
             _lastReceiveAt = 0f;
             _lastServerAcceptedAt = Time.realtimeSinceStartup;
             CacheAuthoritativeStateFromCurrentTransform();
+        }
+
+        public void SetPositionValidator(Func<Vector3, bool> validator) {
+            PositionValidator = validator;
+        }
+
+        public void ClearPositionValidator() {
+            PositionValidator = null;
         }
 
         private void Update() {
@@ -323,15 +340,18 @@ namespace SegNet {
         }
 
         private bool AcceptIncomingClientPosition(Vector3 incomingPosition) {
-            if (maxServerVelocity <= 0f)
-                return true;
+            if (maxServerVelocity > 0f) {
+                float toleranceSeconds = maxRubberBandToleranceMs > 0f
+                    ? maxRubberBandToleranceMs / 1000f
+                    : Mathf.Max(Time.realtimeSinceStartup - _lastServerAcceptedAt, 0f);
+                float maxDistance = maxServerVelocity * toleranceSeconds;
 
-            float toleranceSeconds = maxRubberBandToleranceMs > 0f
-                ? maxRubberBandToleranceMs / 1000f
-                : Mathf.Max(Time.realtimeSinceStartup - _lastServerAcceptedAt, 0f);
-            float maxDistance = maxServerVelocity * toleranceSeconds;
+                if (Vector3.Distance(transform.position, incomingPosition) > maxDistance + 0.001f)
+                    return false;
+            }
 
-            if (Vector3.Distance(transform.position, incomingPosition) > maxDistance + 0.001f)
+            Func<Vector3, bool> validator = PositionValidator;
+            if (validator != null && !validator(incomingPosition))
                 return false;
 
             _lastServerAcceptedAt = Time.realtimeSinceStartup;
